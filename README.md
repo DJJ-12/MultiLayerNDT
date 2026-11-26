@@ -66,34 +66,43 @@ H * delta = -g
 
 ## 可选corner/surface特征链路
 
-所有配置默认`features.enabled: false`，使用原全量点云链路，只建立一套N层金字塔，不读取ring、不运行特征提取。设为`true`后，输入必须有标准PointCloud2的`ring`字段，不需要额外的雷达消息类型。
+原有五份配置默认`features.enabled: false`，使用全量点云链路，只建立一套N层金字塔。设置为`true`后使用从原项目`featureExtraction.cpp`移植的LIO-SAM特征流程，输入必须含PointCloud2的`ring`字段。专用`20261029.yaml`默认开启该模式。
 
-特征提取先按ring分组，再按原始方位角排序，因此不要求消息中的不同扫描线连续存放。滤波在连续的同一条扫描线上进行，不跨越大于`max_gap_deg`的角度缺口，也不跨扫描首尾边界。同方向多回波保留近点；遮挡跳变屏蔽远侧及孤立深度尖峰，保留近侧边缘候选。
+1. 按ring和水平角投影到`N_SCAN × Horizon_SCAN`距离图，同一格保留第一点，按列展开每条ring。
+2. 使用前后各5点的深度差平方计算曲率：`c[i] = (sum(r[i-5:i]) + sum(r[i+1:i+6]) - 10*r[i])²`。
+3. 沿用0.3m遮挡跳变检查、2%深度差检查，标记不适合选作corner/平坦种子的点。
+4. 每条ring分6段，各段按曲率排序，选最多20个corner，选中后抑制前后各5点；抑制遇到大于10列的缺口停止。
+5. 按原实现标记低曲率种子，并将全部非corner点收集为surface，再逐ring体素降采样。surface包括未标记点，不是只保留`label=-1`的少量平坦种子。
 
-令r为深度，B_h为半窗口h的滑动平均：
+输入适配保留原始深度用于曲率，输出使用去畸变坐标；surface经过原流程的体素滤波后是各格质心。窗口限制在单条ring中，排序覆盖分区末端，修正跨ring和闭区间边界问题。
 
-```text
-corner响应 = abs(r - B_high(r)) / r
-surface粗糙度 = sqrt(B_low((r - B_low(r))²)) / r
+```yaml
+features:
+  enabled: true
+  N_SCAN: 16
+  Horizon_SCAN: 2000
+  edgeThreshold: 1.0
+  surfThreshold: 0.1
+  odometrySurfLeafSize: 0.4
 ```
 
-corner响应大于`highpass_threshold`时选为corner；低通后的局部残差RMS小于`lowpass_threshold`且未选为corner时，选为surface候选。低频/深度平滑不能严格证明三维共面，这里的surface表示局部低粗糙度区域，仍由NDT统计体素分布，不额外强制点到平面约束。输出使用对应点的去畸变坐标，不用低通结果移动点的位置。
+曲率阈值单位为m²，不再读取上一版归一化高/低通的窗口及阈值。`edgeThreshold`降低可增加corner候选，`surfThreshold`控制平坦种子标记；`odometrySurfLeafSize`控制按ring输出的surface密度。`N_SCAN`和`Horizon_SCAN`沿用各原始配置的扫描参数，专用配置按实包填写。
 
-| 参数 | 含义 |
-|---|---|
-| `features.enabled` | false为全量模式，true为特征模式 |
-| `highpass_half_window` | 高通参考均值的半窗口，完整窗口为2h+1个点 |
-| `highpass_threshold` | 归一化深度高通阈值；降低后corner增多 |
-| `lowpass_half_window` | 低通与残差能量统计的半窗口，最终需要中心前后各2s个点 |
-| `lowpass_threshold` | 归一化残差RMS阈值；提高后surface候选增多 |
-| `max_gap_deg` | 扫描线相邻点允许的最大方位角间隔，度 |
-| `occlusion_depth_ratio` | 遮挡/尖峰判定的相对深度跳变阈值 |
+两类点各建立独立的N层体素金字塔：corner只查询corner地图，surface只查询surface地图。两类各占一半权重，并分别按本类源点数归一化；各层仍使用`ndt.weights`。每轮所有类别、所有层在同一个位姿计算评分、梯度和Hessian，累加后求解一次增量。
 
-两类点各建立独立的N层体素金字塔：corner只查询corner地图，surface只查询surface地图。两类各占一半权重，并分别按本类源点数归一化；各层仍使用`ndt.weights`。每轮所有类别、所有层在同一个位姿计算评分、梯度和Hessian，累加后求解一次增量。没有把两类点混在同一套体素中，也没有分别优化两个位姿再平均。
+特征只用于前端NDT匹配。关键帧保存两类局部特征供子地图构建，回环校正时按新位姿重建两类金字塔；后端回环、UI和完整PCD仍使用完整关键帧点云。
 
-特征只用于前端NDT匹配。关键帧额外保存两类局部特征供子地图构建，回环校正时按新位姿重建两类金字塔；后端回环、UI和完整PCD仍使用完整关键帧点云。
+原NDT体素至少需要6个支持点，稀疏corner层可能暂时没有有效体素，该层评分为0，仍可由其他有效层/类别提供修正。没有有效观测时按原运动预测传播，不自动切回全量匹配。日志`源特征(C/S)`是经`ndt.source_voxel`过滤后实际参与匹配的点数，可能少于提取阶段数量；`各层评分`和`有效体素`先列corner的N层，再列surface的N层。
 
-原NDT体素至少需要6个支持点，稀疏corner层可能暂时没有有效体素，该层评分为0，仍可由其他有效层/类别提供修正。没有有效观测时按原运动预测传播，不自动切回全量匹配。日志`源特征(C/S)`给出实际送入匹配的两类点数；特征模式的`各层评分`和`有效体素`先列corner的N层，再列surface的N层。全量模式只列N层。
+### 20261029数据包
+
+已只读抽查该包0、30、300、900、1600秒附近的5帧：topic为`/lidar_points_back`，ring范围0~15，水平角间隔约0.18度，time是0~约0.1秒的帧内相对时间。因此`config/20261029.yaml`使用16行、2000列、`time_scale: 1.0`、`time_absolute: false`；不适用禾赛128线/绝对时间的`my_mapping.yaml`设置。
+
+```bash
+ros2 run multi_layer_ndt run_multi_layer_ndt --config "$(ros2 pkg prefix multi_layer_ndt)/share/multi_layer_ndt/config/20261029.yaml" --bag /你的路径/20261029 --output /home/d/maps/20261029_ndt
+```
+
+抽帧已运行新提取代码，分别得到723、861、1061、900、1036个corner。该检查与本地回归测试的PCL体素过滤使用替身，不等于完整ROS2/PCL回放；整包地图质量与真实耗时尚未验证。
 
 ## 位姿图后端与回环
 
@@ -122,6 +131,7 @@ ICP在独立线程运行，只接收不可变关键帧快照并提交回环约�
 | `chaosuan.yaml` | `/cx/cloud` | 相对秒 |
 | `geli.yaml` | `/lidar_points_back` | 相对秒 |
 | `my_mapping.yaml` | `/lidar_points_back` | 禾赛绝对秒，接收层转换 |
+| `20261029.yaml` | `/lidar_points_back` | 16线，0~0.1s相对秒 |
 
 禾赛原文件的`time_scale: 1000`不适用于这里直接换算为秒的接收层，已设置`time_scale: 1.0`与`time_absolute: true`。原LOAM特征、IMU、GPS和base外参不参与这个纯激光程序。
 
@@ -150,7 +160,7 @@ colcon test-result --verbose
 
 测试覆盖各层共同贡献、联合梯度/Hessian与分层加权的一致性、解析导数数值差分、已知位姿配准、第一帧原点、重复时间戳及地图/轨迹保存。
 后端测试增加人工漂移正方形的回环收敛、首帧锚定、前端运动历史隔离、轨迹校正插值、异步ICP回环、重复回环及时间邻近排除。
-特征测试覆盖16线平面/折角、ring交错与乱序、窗口阈值、角度缺口、遮挡与尖峰、类别互斥、独立金字塔禁止跨类别对应、联合解析导数、显式层数，以及开关两条建图链路。
+特征测试覆盖16线平面/折角、ring/列投影、曲率阈值、遮挡、六分区每区20角点上限、邻域抑制、同格第一回波、ring边界、surface收集和体素滤波，以及独立金字塔、联合解析导数、显式层数与两条建图链路。
 Windows开发环境没有ROS2/PCL，完整Ubuntu构建与真实bag回放需要在ROS2机器验证。
 本地已用真实Eigen/Sophus和复制的NDT导数代码编译、运行新建图核心测试；PCL体素、邻域和PCD读写在该隔离测试中使用替身，因此不替代完整ROS2/PCL测试。
 后端已额外编译并链接真实GTSAM进行验证：人工正方形末端漂移由0.8m降至约0.00017m，原连续里程计保持不变；异步回环链路测试中的PCL/ICP仍使用替身，真实数据效果与耗时尚未验证。

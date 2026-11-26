@@ -1,0 +1,58 @@
+# 20261029实测：16线、约0.18度/列，time为0~0.1秒的帧内相对时间。
+# 纯激光、CPU建图。无需预建地图，第一帧雷达坐标系作为map系。
+sensor:
+  lidar_topic: "/lidar_points_back"
+  min_range: 1.0
+  max_range: 1000.0
+  # 点内时间相对header.stamp；time通常是float秒，t常为uint32纳秒。
+  time_field: "time"
+  time_scale: 1.0
+  time_absolute: false
+  # 仅使用前两帧运动估计作恒速去畸变，不订阅IMU/GPS；缺少时间字段时使用原点云。
+  deskew: true
+
+# LIO-SAM特征提取；false保留全量点云链路。
+features:
+  enabled: true
+  N_SCAN: 16                  # ring行数
+  Horizon_SCAN: 2000           # 水平一圈的投影列数，按实际雷达角分辨率配置
+  edgeThreshold: 1.0           # 原LIO-SAM角点曲率阈值，m²
+  surfThreshold: 0.1           # 原LIO-SAM平坦点标记阈值，m²
+  odometrySurfLeafSize: 0.4     # 按ring收集非corner点后的体素滤波边长，m
+
+ndt:
+  num_layers: 3  # 使用resolutions/weights前N项；增加层数时补齐对应项
+  # 每轮所有层同时参与。weights与resolutions一一对应，内部归一化到权重和为1。
+  resolutions: [2.0, 1.0, 0.5]
+  weights: [1.0, 1.0, 1.0]
+  source_voxel: 0.3
+  num_threads: 4
+  max_iterations: 30
+  epsilon: 0.005
+  max_step: 0.3
+
+mapping:
+  keyframe_distance: 1.0
+  keyframe_angle: 0.2   # rad
+  keyframe_time: 2.0   # s，只对收敛帧保存关键帧
+  keyframe_voxel: 0.15
+  submap_radius: 50.0
+  submap_keyframes: 20
+
+# 后端图优化与回环；频率按雷达时间计算，ICP在独立线程运行。
+loop:
+  loopClosureEnableFlag: true
+  loopClosureFrequency: 1.0
+  historyKeyframeSearchRadius: 15.0 # m
+  historyKeyframeSearchTimeDiff: 30.0 # s
+  historyKeyframeSearchNum: 25
+  historyKeyframeFitnessScore: 0.3 # ICP均方误差，m²；越小要求越严格
+  mappingSurfLeafSize: 0.4 # 回环点云降采样，m
+
+output:
+  with_ui: true
+  pub_tf: false
+  map_frame: "map"
+  lidar_frame: "laser_link"
+  save_path: "./maps/20261029"
+  save_voxel: 0.1

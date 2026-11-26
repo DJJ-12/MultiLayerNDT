@@ -46,10 +46,9 @@ struct NdtOptions {
 
 struct FeatureOptions {
     bool enabled = false;
-    int highpass_half_window = 3, lowpass_half_window = 3;
-    // 响应除以本点深度，均为无量纲比值。
-    double highpass_threshold = 0.005, lowpass_threshold = 0.0015;
-    double max_gap_deg = 2.0, occlusion_depth_ratio = 0.05;
+    int N_SCAN = 16, Horizon_SCAN = 2000;
+    // 原LIO-SAM曲率阈值，单位m²；不沿用归一化高/低通阈值。
+    float edgeThreshold = 1.0f, surfThreshold = 0.1f, odometrySurfLeafSize = 0.4f;
 };
 
 struct FeatureClouds {

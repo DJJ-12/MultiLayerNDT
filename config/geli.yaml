@@ -10,15 +10,14 @@ sensor:
   # 仅使用前两帧运动估计作恒速去畸变，不订阅IMU/GPS；缺少时间字段时使用原点云。
   deskew: true
 
-# 扫描线深度滤波选点；false保留当前全量点云NDT链路。
+# LIO-SAM特征提取；false保留全量点云链路。
 features:
   enabled: false
-  highpass_half_window: 3       # 高通窗口2h+1个点，按ring内方位角排列
-  highpass_threshold: 0.005    # |原始深度-局部均值|/深度，越小corner越多
-  lowpass_half_window: 3        # 低通窗口2s+1；残差能量再用相同窗口统计
-  lowpass_threshold: 0.0015    # 归一化残差RMS，越大surface候选越多
-  max_gap_deg: 2.0             # 不跨越比此角度更大的扫描线缺口
-  occlusion_depth_ratio: 0.05  # 深度跳变比例，屏蔽遮挡远侧与孤立尖峰
+  N_SCAN: 16                  # ring行数
+  Horizon_SCAN: 512           # 水平一圈的投影列数，按实际雷达角分辨率配置
+  edgeThreshold: 1.0           # 原LIO-SAM角点曲率阈值，m²
+  surfThreshold: 0.1           # 原LIO-SAM平坦点标记阈值，m²
+  odometrySurfLeafSize: 0.4     # 按ring收集非corner点后的体素滤波边长，m
 
 ndt:
   num_layers: 3  # 使用resolutions/weights前N项；增加层数时补齐对应项

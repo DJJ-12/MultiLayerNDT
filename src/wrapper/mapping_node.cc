@@ -69,12 +69,11 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     options.submap_keyframes = map["submap_keyframes"].as<int>();
     if (const auto features = yaml["features"]) {
         options.features.enabled = features["enabled"].as<bool>(false);
-        options.features.highpass_half_window = features["highpass_half_window"].as<int>(3);
-        options.features.lowpass_half_window = features["lowpass_half_window"].as<int>(3);
-        options.features.highpass_threshold = features["highpass_threshold"].as<double>(0.005);
-        options.features.lowpass_threshold = features["lowpass_threshold"].as<double>(0.0015);
-        options.features.max_gap_deg = features["max_gap_deg"].as<double>(2.0);
-        options.features.occlusion_depth_ratio = features["occlusion_depth_ratio"].as<double>(0.05);
+        options.features.N_SCAN = features["N_SCAN"].as<int>(16);
+        options.features.Horizon_SCAN = features["Horizon_SCAN"].as<int>(2000);
+        options.features.edgeThreshold = features["edgeThreshold"].as<float>(1.0f);
+        options.features.surfThreshold = features["surfThreshold"].as<float>(0.1f);
+        options.features.odometrySurfLeafSize = features["odometrySurfLeafSize"].as<float>(0.4f);
     }
     use_features_ = options.features.enabled;
     if (const auto loop = yaml["loop"]) {
@@ -177,8 +176,14 @@ void MappingNode::ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& c
         const auto result = mapping_->Process(scan);
         if (!result.valid) return;
         last_header_ = cloud->header;
-        if (frames_ == 0) RCLCPP_INFO(get_logger(), "首帧有效点=%zu，点内时间=%s，第一帧建立map原点",
-            scan.cloud->size(), scan.relative_times.empty() ? "无/未启用" : "已转换为相对秒");
+        if (frames_ == 0) {
+            RCLCPP_INFO(get_logger(), "首帧有效点=%zu，点内时间=%s，第一帧建立map原点",
+                scan.cloud->size(), scan.relative_times.empty() ? "无/未启用" : "已转换为相对秒");
+            if (!scan.rings.empty()) {
+                const auto range = std::minmax_element(scan.rings.begin(), scan.rings.end());
+                RCLCPP_INFO(get_logger(), "[LIO-SAM特征] 收到ring范围=%u..%u", unsigned(*range.first), unsigned(*range.second));
+            }
+        }
         Publish(result, cloud->header);
         if (++frames_ % 20 == 1) {
             std::ostringstream scores; for (double score : result.layer_scores) scores << score << ' ';

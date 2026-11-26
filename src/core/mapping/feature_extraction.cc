@@ -1,94 +1,113 @@
 #include "core/mapping/feature_extraction.h"
+#include <pcl/filters/voxel_grid.h>
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 
 namespace lightning {
 namespace {
-void ExtractSegment(const std::vector<std::size_t>& ids, std::size_t begin, std::size_t end,
-                    const std::vector<double>& ranges, const CloudPtr& deskewed,
-                    const FeatureOptions& options, FeatureClouds& features) {
-    const int n = static_cast<int>(end - begin);
-    const int high = options.highpass_half_window, low = options.lowpass_half_window;
-    const int border = std::max(high, low);
-    std::vector<double> depth(n), sum(n + 1, 0.0), energy(n + 1, 0.0);
-    std::vector<bool> usable(n, true), corner(n, false);
-    for (int i = 0; i < n; ++i) {
-        depth[i] = ranges[ids[begin + i]];
-        sum[i + 1] = sum[i] + depth[i];
+// 移植自原LIO-SAM featureExtraction.cpp：±5点曲率、遮挡检查、六分区选点与邻域抑制。
+void ExtractRing(const std::vector<int>& ids, const std::vector<int>& columns, const Scan& scan,
+                 const CloudPtr& deskewed, const FeatureOptions& options, FeatureClouds& features) {
+    const int n = static_cast<int>(ids.size());
+    if (n < 11) return;
+    std::vector<float> range(n), curvature(n, 0.0f);
+    std::vector<int> order(n), label(n, 0);
+    std::vector<bool> picked(n, false);
+    std::iota(order.begin(), order.end(), 0);
+    for (int i = 0; i < n; ++i) range[i] = scan.cloud->points[ids[i]].getVector3fMap().norm();
+    // 前后各五点的窗口严格留在本ring中，不借用相邻ring末端的数据。
+    for (int i = 5; i < n - 5; ++i) {
+        const float diffRange = range[i-5] + range[i-4] + range[i-3] + range[i-2] + range[i-1]
+            - range[i] * 10 + range[i+1] + range[i+2] + range[i+3] + range[i+4] + range[i+5];
+        curvature[i] = diffRange * diffRange;
     }
-    for (int i = 0; i + 1 < n; ++i) {
-        const double jump = options.occlusion_depth_ratio * std::min(depth[i], depth[i + 1]);
-        // 遮挡跳变只屏蔽远侧，近侧边缘仍可作为corner候选。
-        if (depth[i] - depth[i + 1] > jump)
-            for (int j = std::max(0, i - border + 1); j <= i; ++j) usable[j] = false;
-        else if (depth[i + 1] - depth[i] > jump)
-            for (int j = i + 1; j <= std::min(n - 1, i + border); ++j) usable[j] = false;
-    }
-    for (int i = 1; i + 1 < n; ++i) {
-        const double left = depth[i] - depth[i - 1], right = depth[i] - depth[i + 1];
-        const double threshold = options.occlusion_depth_ratio * depth[i];
-        if (left * right > 0 && std::abs(left) > threshold && std::abs(right) > threshold) usable[i] = false;
-    }
-    // 保留响应带内的点，不按每段固定个数限额，给NDT高斯体素保留足够支持点。
-    for (int i = high; i + high < n; ++i) {
-        const double smooth = (sum[i + high + 1] - sum[i - high]) / (2 * high + 1);
-        const double response = std::abs(depth[i] - smooth) / depth[i];
-        if (usable[i] && response > options.highpass_threshold) {
-            corner[i] = true;
-            features.corner->push_back(deskewed->points[ids[begin + i]]);
+    for (int i = 5; i < n - 6; ++i) {
+        if (std::abs(columns[i + 1] - columns[i]) < 10) {
+            if (range[i] - range[i + 1] > 0.3f)
+                for (int j = i - 5; j <= i; ++j) picked[j] = true;
+            else if (range[i + 1] - range[i] > 0.3f)
+                for (int j = i + 1; j <= i + 6; ++j) picked[j] = true;
         }
+        const float diff1 = std::abs(range[i - 1] - range[i]);
+        const float diff2 = std::abs(range[i + 1] - range[i]);
+        if (diff1 > 0.02f * range[i] && diff2 > 0.02f * range[i]) picked[i] = true;
     }
-    // 低通后的残差能量，比仅检查中心点残差更能识别正负波动互相抵消的噪声。
-    for (int i = 0; i < n; ++i) {
-        double residual = 0.0;
-        if (i >= low && i + low < n)
-            residual = depth[i] - (sum[i + low + 1] - sum[i - low]) / (2 * low + 1);
-        energy[i + 1] = energy[i] + residual * residual;
+    const auto suppressNeighbors = [&](int index) {
+        picked[index] = true;
+        for (int step : {-1, 1}) for (int offset = 1; offset <= 5; ++offset) {
+            const int current = index + step * offset, previous = current - step;
+            if (current < 0 || current >= n || std::abs(columns[current] - columns[previous]) > 10) break;
+            picked[current] = true;
+        }
+    };
+    CloudPtr surface(new PointCloudType);
+    const int valid = n - 10;
+    for (int section = 0; section < 6; ++section) {
+        const int sp = 5 + valid * section / 6;
+        const int ep = 5 + valid * (section + 1) / 6 - 1;
+        if (sp >= ep) continue;
+        // ep为闭区间末端，排序包含ep，避免末尾候选漏排。
+        std::sort(order.begin() + sp, order.begin() + ep + 1, [&](int a, int b) {
+            return curvature[a] == curvature[b] ? a < b : curvature[a] < curvature[b];
+        });
+        int largestPickedNum = 0;
+        for (int k = ep; k >= sp; --k) {
+            const int index = order[k];
+            if (!picked[index] && curvature[index] > options.edgeThreshold) {
+                if (++largestPickedNum > 20) break;
+                label[index] = 1;
+                features.corner->push_back(deskewed->points[ids[index]]);
+                suppressNeighbors(index);
+            }
+        }
+        for (int k = sp; k <= ep; ++k) {
+            const int index = order[k];
+            if (!picked[index] && curvature[index] < options.surfThreshold) {
+                label[index] = -1;
+                suppressNeighbors(index);
+            }
+        }
+        // 沿用原LIO-SAM：surface包含非corner点，而非只保留label=-1的少量平坦点。
+        for (int k = sp; k <= ep; ++k) if (label[k] <= 0) surface->push_back(deskewed->points[ids[k]]);
     }
-    for (int i = 2 * low; i + 2 * low < n; ++i) {
-        const double mean_energy = (energy[i + low + 1] - energy[i - low]) / (2 * low + 1);
-        const double roughness = std::sqrt(std::max(0.0, mean_energy)) / depth[i];
-        if (usable[i] && !corner[i] && roughness < options.lowpass_threshold)
-            features.surface->push_back(deskewed->points[ids[begin + i]]);
+    if (!surface->empty()) {
+        PointCloudType sampled;
+        pcl::VoxelGrid<PointType> filter;
+        filter.setLeafSize(options.odometrySurfLeafSize, options.odometrySurfLeafSize, options.odometrySurfLeafSize);
+        filter.setInputCloud(surface); filter.filter(sampled);
+        *features.surface += sampled;
     }
 }
 }  // namespace
 
 FeatureClouds ExtractFeatures(const Scan& scan, const CloudPtr& deskewed, const FeatureOptions& options) {
-    if (options.highpass_half_window < 1 || options.lowpass_half_window < 1)
-        throw std::invalid_argument("特征滤波的half_window必须至少为1");
+    if (options.N_SCAN < 1 || options.Horizon_SCAN < 1 || options.odometrySurfLeafSize <= 0)
+        throw std::invalid_argument("LIO-SAM特征参数N_SCAN/Horizon_SCAN/odometrySurfLeafSize必须为正");
     if (scan.rings.size() != scan.cloud->size() || deskewed->size() != scan.cloud->size())
         throw std::invalid_argument("特征模式需要与有效点一一对应的ring字段");
     FeatureClouds features{CloudPtr(new PointCloudType), CloudPtr(new PointCloudType)};
-    std::map<std::uint16_t, std::vector<std::size_t>> rings;
-    std::vector<double> angles(scan.cloud->size()), ranges(scan.cloud->size());
+    std::vector<int> image(static_cast<std::size_t>(options.N_SCAN) * options.Horizon_SCAN, -1);
+    const float angular_resolution = 360.0f / options.Horizon_SCAN;
     for (std::size_t i = 0; i < scan.cloud->size(); ++i) {
+        const int row = scan.rings[i];
+        if (row >= options.N_SCAN) continue;
         const auto& point = scan.cloud->points[i];
-        angles[i] = std::atan2(point.y, point.x);
-        ranges[i] = point.getVector3fMap().cast<double>().norm();
-        if (ranges[i] > 0.0 && std::isfinite(ranges[i])) rings[scan.rings[i]].push_back(i);
+        const float horizonAngle = std::atan2(point.x, point.y) * 180.0f / static_cast<float>(std::acos(-1.0));
+        int column = -static_cast<int>(std::round((horizonAngle - 90.0f) / angular_resolution)) + options.Horizon_SCAN / 2;
+        if (column >= options.Horizon_SCAN) column -= options.Horizon_SCAN;
+        if (column < 0 || column >= options.Horizon_SCAN) continue;
+        auto& cell = image[static_cast<std::size_t>(row) * options.Horizon_SCAN + column];
+        if (cell < 0) cell = static_cast<int>(i);  // 同一格保留第一点，沿用原projectPointCloud规则。
     }
-    const double max_gap = options.max_gap_deg * std::acos(-1.0) / 180.0;
-    for (auto& entry : rings) {
-        auto& ids = entry.second;
-        std::sort(ids.begin(), ids.end(), [&](auto a, auto b) {
-            return angles[a] == angles[b] ? ranges[a] < ranges[b] : angles[a] < angles[b];
-        });
-        // 同一方向多回波保留近点，避免零角间隔的远近回波被当成相邻结构。
-        std::size_t count = 0;
-        for (auto id : ids) {
-            if (count > 0 && std::abs(angles[id] - angles[ids[count - 1]]) < 1e-6) {
-                if (ranges[id] < ranges[ids[count - 1]]) ids[count - 1] = id;
-            } else ids[count++] = id;
+    for (int ring = 0; ring < options.N_SCAN; ++ring) {
+        std::vector<int> ids, columns;
+        for (int column = 0; column < options.Horizon_SCAN; ++column) {
+            const int id = image[static_cast<std::size_t>(ring) * options.Horizon_SCAN + column];
+            if (id >= 0) { ids.push_back(id); columns.push_back(column); }
         }
-        ids.resize(count);
-        std::size_t begin = 0;
-        for (std::size_t end = 1; end <= ids.size(); ++end) {
-            if (end < ids.size() && angles[ids[end]] - angles[ids[end - 1]] <= max_gap) continue;
-            ExtractSegment(ids, begin, end, ranges, deskewed, options, features);
-            begin = end;
-        }
+        ExtractRing(ids, columns, scan, deskewed, options, features);
     }
     return features;
 }

@@ -21,7 +21,7 @@ Scan Rays(int shape) {
             const double angle = (sample - 120) * .005;
             if (shape == 3 && std::abs(angle) < .15) continue;
             double distance = 8.0 / (std::cos(elevation) * std::cos(angle));
-            if (shape == 1) distance = 8.0 / (std::cos(elevation) * (std::cos(angle) + std::abs(std::sin(angle))));
+            if (shape == 1) distance = 8.0 / (std::cos(elevation) * (std::cos(angle - .08) + std::abs(std::sin(angle - .08))));
             if ((shape == 2 || shape == 3) && angle >= 0) distance *= 2;
             if (shape == 4 && sample == 120) distance *= .5;
             PointType point;
@@ -59,50 +59,64 @@ CloudPtr Clusters(double offset) {
 int main() {
     try {
         FeatureOptions features; features.enabled = true;
+        features.odometrySurfLeafSize = .001f;  // 先核对原始分类，再单独核对按ring体素滤波。
         const auto plane = Rays(0), edge = Rays(1);
         const auto flat = ExtractFeatures(plane, plane.cloud, features);
         const auto selected = ExtractFeatures(edge, edge.cloud, features);
         Require(flat.corner->empty() && flat.surface->size() > 1000, "flat plane classification");
-        Require(selected.corner->size() >= 16 && selected.surface->size() > 1000, "geometric edge not detected");
+        Require(selected.corner->size() >= 16 && selected.surface->size() > 1000, "LIO-SAM geometric edge not detected");
         const auto corners = Ids(selected.corner), surfaces = Ids(selected.surface);
-        for (int id : corners) Require(!surfaces.count(id), "corner and surface overlap");
+        for (int id : corners) Require(!surfaces.count(id), "corner points leaked into raw surface set");
 
-        // 任意输入顺序和ring交错，特征ID保持一致。
         std::vector<std::size_t> order(edge.cloud->size()); std::iota(order.begin(), order.end(), 0);
         std::mt19937 random(7); std::shuffle(order.begin(), order.end(), random);
         Scan shuffled; shuffled.cloud.reset(new PointCloudType);
         for (auto id : order) { shuffled.cloud->push_back(edge.cloud->points[id]); shuffled.rings.push_back(edge.rings[id]); }
         const auto reordered = ExtractFeatures(shuffled, shuffled.cloud, features);
-        Require(Ids(reordered.corner) == corners && Ids(reordered.surface) == surfaces, "ring grouping/azimuth order depends on input layout");
+        Require(Ids(reordered.corner) == corners && Ids(reordered.surface) == surfaces, "ring/column projection depends on input layout");
+        auto strict = features; strict.edgeThreshold = 1e9f;
+        Require(ExtractFeatures(edge, edge.cloud, strict).corner->empty(), "edgeThreshold has no effect");
+        strict = features; strict.surfThreshold = 0;
+        Require(!ExtractFeatures(plane, plane.cloud, strict).surface->empty(), "surface must retain unlabeled non-corner points like original LIO-SAM");
+        strict = features; strict.odometrySurfLeafSize = .4f;
+        const auto sampled = ExtractFeatures(plane, plane.cloud, strict);
+        Require(!sampled.surface->empty() && sampled.surface->size() < flat.surface->size(), "surface voxel filter not applied");
+        strict = features; strict.Horizon_SCAN = 512;
+        Require(ExtractFeatures(plane, plane.cloud, strict).surface->size() < flat.surface->size(), "Horizon_SCAN does not control projection columns");
+        strict = features; strict.N_SCAN = 8;
+        const auto eight = ExtractFeatures(edge, edge.cloud, strict);
+        for (int id : Ids(eight.corner)) Require(id < 8 * 241, "out-of-range rings accepted");
+        for (int id : Ids(eight.surface)) Require(id < 8 * 241, "out-of-range rings leaked into surface");
+
         Scan echoes = edge; echoes.cloud.reset(new PointCloudType(*edge.cloud));
+        Scan far_first; far_first.cloud.reset(new PointCloudType);
         for (std::size_t i = 0; i < edge.cloud->size(); ++i) {
-            auto p = edge.cloud->points[i];
-            const double angle = -2e-7;
-            const double x = p.x, y = p.y;
-            p.x = 2 * (std::cos(angle) * x - std::sin(angle) * y);
-            p.y = 2 * (std::sin(angle) * x + std::cos(angle) * y); p.z *= 2; p.intensity += 10000;
+            auto p = edge.cloud->points[i]; p.x *= 2; p.y *= 2; p.z *= 2; p.intensity += 10000;
             echoes.cloud->push_back(p); echoes.rings.push_back(edge.rings[i]);
+            far_first.cloud->push_back(p); far_first.rings.push_back(edge.rings[i]);
         }
-        const auto nearest_echo = ExtractFeatures(echoes, echoes.cloud, features);
-        Require(Ids(nearest_echo.corner) == corners && Ids(nearest_echo.surface) == surfaces, "same-direction echoes did not retain near points");
-        auto strict = features; strict.highpass_threshold = 1.0;
-        Require(ExtractFeatures(edge, edge.cloud, strict).corner->empty(), "highpass threshold has no effect");
-        strict = features; strict.lowpass_threshold = 0.0;
-        Require(ExtractFeatures(plane, plane.cloud, strict).surface->empty(), "lowpass threshold has no effect");
-        strict = features; strict.highpass_half_window = 1;
-        Require(ExtractFeatures(edge, edge.cloud, strict).corner->size() < selected.corner->size(), "highpass window has no effect");
-        strict = features; strict.lowpass_half_window = 1;
-        Require(ExtractFeatures(plane, plane.cloud, strict).surface->size() > flat.surface->size(), "lowpass window has no effect");
+        for (std::size_t i = 0; i < edge.cloud->size(); ++i) {
+            far_first.cloud->push_back(edge.cloud->points[i]); far_first.rings.push_back(edge.rings[i]);
+        }
+        Require(Ids(ExtractFeatures(echoes, echoes.cloud, features).corner) == corners, "projection did not retain first pixel return");
+        const auto first_return = ExtractFeatures(far_first, far_first.cloud, features);
+        Require(!first_return.corner->empty(), "far-first projection produced no test edges");
+        for (int id : Ids(first_return.corner)) Require(id >= 10000, "projection silently replaced first return by near return");
+
         CloudPtr deskewed(new PointCloudType(*edge.cloud));
         for (auto& p : deskewed->points) { p.x += 1; p.y += 2; }
         const auto moved_selection = ExtractFeatures(edge, deskewed, features);
         Require(Ids(moved_selection.corner) == corners, "deskewing changed raw-depth feature labels");
         for (const auto& p : moved_selection.corner->points) {
             const auto& raw = edge.cloud->points[static_cast<std::size_t>(p.intensity)];
-            Require(std::abs(p.x - raw.x - 1) < 1e-5 && std::abs(p.y - raw.y - 2) < 1e-5, "filtered depth moved point geometry");
+            Require(std::abs(p.x - raw.x - 1) < 1e-5 && std::abs(p.y - raw.y - 2) < 1e-5, "corner did not use deskewed coordinates");
         }
-        auto gap = Rays(3);
-        Require(ExtractFeatures(gap, gap.cloud, features).corner->empty(), "filter crosses angular gap");
+        auto ring_boundary = plane;
+        ring_boundary.cloud.reset(new PointCloudType(*plane.cloud));
+        for (std::size_t i = 0; i < ring_boundary.cloud->size(); ++i) if (ring_boundary.rings[i] % 2) {
+            auto& p = ring_boundary.cloud->points[i]; p.x *= 2; p.y *= 2; p.z *= 2;
+        }
+        Require(ExtractFeatures(ring_boundary, ring_boundary.cloud, features).corner->empty(), "curvature crossed ring boundaries");
         auto occluded = Rays(2);
         const auto boundary = ExtractFeatures(occluded, occluded.cloud, features);
         Require(!boundary.corner->empty(), "near-side occlusion edges were all discarded");
@@ -113,6 +127,21 @@ int main() {
         bool rejected = false;
         try { ExtractFeatures(missing, missing.cloud, features); } catch (const std::invalid_argument&) { rejected = true; }
         Require(rejected, "feature mode accepted missing ring metadata");
+
+        // 高曲率候选足够多时，验证原LIO-SAM六分区、每区20个以及±5点抑制。
+        Scan waves; waves.cloud.reset(new PointCloudType);
+        for (int col = 0; col < 2000; ++col) {
+            const double angle = (col - 1000) * 2 * std::acos(-1.0) / 2000;
+            const double distance = 8 + (col % 2 ? .06 : -.06);
+            PointType p; p.x = distance * std::cos(angle); p.y = distance * std::sin(angle); p.z = 0; p.intensity = col;
+            waves.cloud->push_back(p); waves.rings.push_back(0);
+        }
+        auto many = features; many.N_SCAN = 1; many.edgeThreshold = .1f;
+        const auto limited = ExtractFeatures(waves, waves.cloud, many);
+        Require(limited.corner->size() == 120, "six sectors must select at most 20 corners each");
+        const auto limited_ids = Ids(limited.corner);
+        int previous = -100;
+        for (int id : limited_ids) { Require(id - previous > 5, "corner neighborhood suppression missing"); previous = id; }
 
         NdtOptions options; options.num_layers = 2; options.num_threads = 1;
         options.resolutions = {1.6, .8, .4}; options.weights = {1, 2, 3};
