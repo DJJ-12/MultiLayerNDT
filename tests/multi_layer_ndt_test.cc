@@ -44,6 +44,7 @@ int main() {
         double expected = 0;
         for (std::size_t layer = 0; layer < 3; ++layer) {
             auto single_options = options;
+            single_options.num_layers = 1;
             single_options.resolutions = {options.resolutions[layer]}; single_options.weights = {1};
             MultiLayerNdt single(single_options); single.SetTarget(target);
             Vec6d g; Mat6d h; std::vector<double> s;

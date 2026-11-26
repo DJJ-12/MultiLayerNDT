@@ -1,4 +1,5 @@
 #include "core/mapping/mapping.h"
+#include "core/mapping/feature_extraction.h"
 
 #include <algorithm>
 #include <cmath>
@@ -14,6 +15,7 @@ Mapping::Mapping(MappingOptions options) : options_(std::move(options)), ndt_(op
 
 CloudPtr Mapping::Downsample(const CloudPtr& cloud, double size) const {
     CloudPtr sampled(new PointCloudType);
+    if (cloud->empty()) return sampled;
     pcl::VoxelGrid<PointType> filter;
     filter.setLeafSize(size, size, size);
     filter.setInputCloud(cloud);
@@ -38,6 +40,8 @@ bool Mapping::UpdateSubmap(const SE3& prediction) {
     if (selected == active_) return false;
     active_ = std::move(selected);
     submap_.reset(new PointCloudType);
+    FeatureClouds feature_map;
+    if (options_.features.enabled) feature_map = {CloudPtr(new PointCloudType), CloudPtr(new PointCloudType)};
     std::map<int, CloudPtr> clouds;
     for (auto id : active_) {
         auto found = active_clouds_.find(static_cast<int>(id));
@@ -51,9 +55,21 @@ bool Mapping::UpdateSubmap(const SE3& prediction) {
         }
         clouds.emplace(static_cast<int>(id), world);
         *submap_ += *world;
+        if (options_.features.enabled) {
+            const auto& frame = data_.keyframes[id];
+            const Eigen::Matrix4f transform = frame.pose.matrix().cast<float>();
+            const CloudPtr local[] = {frame.features.corner, frame.features.surface};
+            const CloudPtr target[] = {feature_map.corner, feature_map.surface};
+            for (int group = 0; group < 2; ++group) if (local[group] && !local[group]->empty()) {
+                PointCloudType transformed;
+                pcl::transformPointCloud(*local[group], transformed, transform);
+                *target[group] += transformed;
+            }
+        }
     }
     active_clouds_ = std::move(clouds);
-    ndt_.SetTarget(submap_);
+    if (options_.features.enabled) ndt_.SetFeatureTarget(feature_map);
+    else ndt_.SetTarget(submap_);
     return true;
 }
 
@@ -91,14 +107,24 @@ MappingResult Mapping::Process(const Scan& scan) {
             point.x = corrected.x(); point.y = corrected.y(); point.z = corrected.z();
         }
     }
-    const auto source = Downsample(result.scan, options_.ndt.source_voxel);
-    if (source->empty()) return result;
+    CloudPtr source;
+    FeatureClouds features, feature_source;
+    if (options_.features.enabled) {
+        features = ExtractFeatures(scan, result.scan, options_.features);
+        feature_source = {Downsample(features.corner, options_.ndt.source_voxel),
+                          Downsample(features.surface, options_.ndt.source_voxel)};
+        result.corner_count = feature_source.corner->size();
+        result.surface_count = feature_source.surface->size();
+    } else {
+        source = Downsample(result.scan, options_.ndt.source_voxel);
+        if (source->empty()) return result;
+    }
     NdtFit fit;
     if (data_.keyframes.empty()) {
         fit.pose = SE3(); fit.valid = fit.converged = true;
     } else {
         result.map_updated = UpdateSubmap(result.prediction);
-        fit = ndt_.Align(source, result.prediction);
+        fit = options_.features.enabled ? ndt_.AlignFeatures(feature_source, result.prediction) : ndt_.Align(source, result.prediction);
     }
     result.valid = true;
     result.converged = fit.valid && fit.converged;
@@ -123,7 +149,10 @@ MappingResult Mapping::Process(const Scan& scan) {
     }
     if (add) {
         const auto sampled = Downsample(result.scan, options_.keyframe_voxel);
-        data_.keyframes.push_back({scan.stamp, result.state.pose, sampled, odometry.pose});
+        Keyframe frame{scan.stamp, result.state.pose, sampled, odometry.pose};
+        if (options_.features.enabled)
+            frame.features = {Downsample(features.corner, options_.keyframe_voxel), Downsample(features.surface, options_.keyframe_voxel)};
+        data_.keyframes.push_back(std::move(frame));
         result.graph_updated = UpdateGraph() || result.graph_updated;
         backend_.CheckLoop(data_.keyframes);
         result.keyframe_added = true;
@@ -134,6 +163,7 @@ MappingResult Mapping::Process(const Scan& scan) {
         result.map_updated = UpdateSubmap(result.state.pose) || result.map_updated;
     result.keyframe_count = data_.keyframes.size();
     result.loop_count = backend_.LoopCount();
+    result.layer_voxels = ndt_.VoxelCounts();
     if (result.map_updated) result.local_map = active_clouds_;
     last_scan_ = result.scan;
     return result;

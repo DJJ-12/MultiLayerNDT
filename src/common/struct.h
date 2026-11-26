@@ -21,6 +21,7 @@ struct Scan {
     double stamp = 0.0;
     CloudPtr cloud;
     std::vector<double> relative_times;
+    std::vector<std::uint16_t> rings;  // 仅启用特征点时接收，与有效点一一对应。
 };
 
 // UI只需要这些状态，不引入滤波器和IMU状态模型。
@@ -36,10 +37,23 @@ struct NavState {
 };
 
 struct NdtOptions {
+    int num_layers = 3;  // 使用resolutions和weights的前num_layers项。
     std::vector<double> resolutions{2.0, 1.0, 0.5};
     std::vector<double> weights{1.0, 1.0, 1.0};
     int max_iterations = 30, num_threads = 4;
     double epsilon = 0.005, max_step = 0.3, source_voxel = 0.3;
+};
+
+struct FeatureOptions {
+    bool enabled = false;
+    int highpass_half_window = 3, lowpass_half_window = 3;
+    // 响应除以本点深度，均为无量纲比值。
+    double highpass_threshold = 0.005, lowpass_threshold = 0.0015;
+    double max_gap_deg = 2.0, occlusion_depth_ratio = 0.05;
+};
+
+struct FeatureClouds {
+    CloudPtr corner, surface;  // 关闭特征点时保持空指针，不分配两类点云。
 };
 
 struct NdtFit {
@@ -67,6 +81,7 @@ struct LoopConstraint {
 
 struct MappingOptions {
     NdtOptions ndt;
+    FeatureOptions features;
     LoopOptions loop;
     double keyframe_distance = 1.0, keyframe_angle = 0.2, keyframe_time = 2.0;
     double submap_radius = 50.0, keyframe_voxel = 0.15;
@@ -78,6 +93,7 @@ struct Keyframe {
     SE3 pose;
     CloudPtr cloud;  // 自身雷达系点云只存一份，回环后按新位姿重建地图。
     SE3 odom_pose;   // 连续前端位姿；图优化不能改变里程计边或运动预测。
+    FeatureClouds features;  // 自身雷达系，仅在特征模式保存。
 };
 
 struct MappingResult {
@@ -87,8 +103,10 @@ struct MappingResult {
     bool valid = false, converged = false, keyframe_added = false, map_updated = false;
     bool graph_updated = false;
     std::size_t keyframe_count = 0, loop_count = 0;
+    std::size_t corner_count = 0, surface_count = 0;
     int iterations = 0;
     std::vector<double> layer_scores;
+    std::vector<std::size_t> layer_voxels;
     std::map<int, CloudPtr> local_map;
 };
 

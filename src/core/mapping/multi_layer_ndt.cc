@@ -27,12 +27,18 @@ public:
         return computeDerivatives(gradient, hessian, transformed, pose, full);
     }
     double weight, amplitude;
+    int group = 0;  // 全量模式为0；特征模式0为corner，1为surface。
+    std::size_t voxel_count = 0;
     bool usable = false;
 };
 
 MultiLayerNdt::MultiLayerNdt(NdtOptions options) : options_(std::move(options)) {
     if (options_.resolutions.empty() || options_.resolutions.size() != options_.weights.size())
         throw std::invalid_argument("ndt.resolutions与weights需要有相同的非零长度");
+    if (options_.num_layers < 1 || options_.num_layers > static_cast<int>(options_.resolutions.size()))
+        throw std::invalid_argument("ndt.num_layers必须在1与resolutions/weights的长度之间");
+    options_.resolutions.resize(options_.num_layers);
+    options_.weights.resize(options_.num_layers);
     const double total = std::accumulate(options_.weights.begin(), options_.weights.end(), 0.0);
     if (!(total > 0)) throw std::invalid_argument("NDT权重和必须大于0");
     for (std::size_t i = 0; i < options_.weights.size(); ++i) {
@@ -45,14 +51,33 @@ MultiLayerNdt::~MultiLayerNdt() = default;
 
 void MultiLayerNdt::SetTarget(const CloudPtr& target) {
     layers_.clear();  // 原MultiGrid的addTarget是追加语义；重建避免旧子地图残留。
+    AppendLayers(target, 0, 1.0);
+}
+
+void MultiLayerNdt::SetFeatureTarget(const FeatureClouds& target) {
+    layers_.clear();
+    // 两类各占一半权重，各自按源点数归一化，避免surface数量淹没corner。
+    AppendLayers(target.corner, 0, 0.5);
+    AppendLayers(target.surface, 1, 0.5);
+}
+
+void MultiLayerNdt::AppendLayers(const CloudPtr& target, int group, double group_weight) {
     for (std::size_t i = 0; i < options_.resolutions.size(); ++i) {
-        auto layer = std::make_unique<Layer>(options_, options_.resolutions[i], options_.weights[i]);
-        if (options_.weights[i] > 0.0) {
+        auto layer = std::make_unique<Layer>(options_, options_.resolutions[i], options_.weights[i] * group_weight);
+        layer->group = group;
+        if (options_.weights[i] > 0.0 && target && !target->empty()) {
             layer->setInputTarget(target);
-            layer->usable = !layer->getVoxelPCD().empty();
+            layer->voxel_count = layer->getVoxelPCD().size();
+            layer->usable = layer->voxel_count > 0;
         }
         layers_.push_back(std::move(layer));
     }
+}
+
+std::vector<std::size_t> MultiLayerNdt::VoxelCounts() const {
+    std::vector<std::size_t> counts;
+    for (const auto& layer : layers_) counts.push_back(layer->voxel_count);
+    return counts;
 }
 
 SE3 MultiLayerNdt::ToPose(const Vec6d& p) {
@@ -69,19 +94,30 @@ Vec6d MultiLayerNdt::ToParameters(const SE3& pose) {
 
 double MultiLayerNdt::Evaluate(const CloudPtr& source, const Vec6d& pose, Vec6d& gradient,
                              Mat6d& hessian, std::vector<double>& scores, bool full) {
+    return EvaluateSources({source, nullptr}, pose, gradient, hessian, scores, full);
+}
+
+double MultiLayerNdt::EvaluateFeatures(const FeatureClouds& source, const Vec6d& pose, Vec6d& gradient,
+                                     Mat6d& hessian, std::vector<double>& scores, bool full) {
+    return EvaluateSources({source.corner, source.surface}, pose, gradient, hessian, scores, full);
+}
+
+double MultiLayerNdt::EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
+                                    Mat6d& hessian, std::vector<double>& scores, bool full) {
     gradient.setZero(); hessian.setZero(); scores.assign(layers_.size(), 0.0);
-    if (source->empty()) return 0.0;
-    PointCloudType transformed;
+    std::array<PointCloudType, 2> transformed;
     const Eigen::Matrix4f transform = ToPose(pose).matrix().cast<float>();
-    pcl::transformPointCloud(*source, transformed, transform);
+    for (std::size_t group = 0; group < sources.size(); ++group)
+        if (sources[group] && !sources[group]->empty()) pcl::transformPointCloud(*sources[group], transformed[group], transform);
     double score = 0.0;
     for (std::size_t i = 0; i < layers_.size(); ++i) {
         auto& layer = *layers_[i];
-        if (!layer.usable || layer.weight == 0.0) continue;
+        const auto& source = sources[layer.group];
+        if (!layer.usable || layer.weight == 0.0 || !source || source->empty()) continue;
         layer.setInputSource(source);
         Vec6d g, p = pose;
         Mat6d h;
-        const double raw = layer.Score(transformed, p, g, h, full);
+        const double raw = layer.Score(transformed[layer.group], p, g, h, full);
         // 固定总点数与高斯幅值归一化；不使用随位姿变化的“成功匹配点数”作分母。
         const double normalizer = 1.0 / (source->size() * layer.amplitude);
         scores[i] = normalizer * raw;
@@ -93,11 +129,19 @@ double MultiLayerNdt::Evaluate(const CloudPtr& source, const Vec6d& pose, Vec6d&
 }
 
 NdtFit MultiLayerNdt::Align(const CloudPtr& source, const SE3& prediction) {
+    return AlignSources({source, nullptr}, prediction);
+}
+
+NdtFit MultiLayerNdt::AlignFeatures(const FeatureClouds& source, const SE3& prediction) {
+    return AlignSources({source.corner, source.surface}, prediction);
+}
+
+NdtFit MultiLayerNdt::AlignSources(const Sources& sources, const SE3& prediction) {
     NdtFit fit;
     fit.pose = prediction;
     Vec6d pose = ToParameters(prediction), gradient;
     Mat6d hessian;
-    double score = Evaluate(source, pose, gradient, hessian, fit.layer_scores);
+    double score = EvaluateSources(sources, pose, gradient, hessian, fit.layer_scores);
     if (!(score > 0) || !std::isfinite(score)) return fit;
     fit.valid = true;
     for (int iteration = 0; iteration < options_.max_iterations; ++iteration) {
@@ -113,7 +157,7 @@ NdtFit MultiLayerNdt::Align(const CloudPtr& source, const SE3& prediction) {
             Vec6d trial_gradient;
             Mat6d trial_hessian;
             std::vector<double> trial_scores;
-            const double trial_score = Evaluate(source, pose + delta, trial_gradient, trial_hessian, trial_scores);
+            const double trial_score = EvaluateSources(sources, pose + delta, trial_gradient, trial_hessian, trial_scores);
             if (!std::isfinite(trial_score) || trial_score < score) continue;
             pose += delta;
             score = trial_score; gradient = trial_gradient; hessian = trial_hessian;

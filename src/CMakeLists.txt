@@ -1,6 +1,7 @@
 add_library(multi_layer_ndt_core STATIC
   core/mapping/multi_layer_ndt.cc
   core/mapping/mapping.cc
+  core/mapping/feature_extraction.cc
   core/backend/pose_graph.cpp
   core/backend/loop.cpp
   core/localization/GlobalLocalizer/ndt_omp/multigrid_ndt_omp.cpp
@@ -30,4 +31,7 @@ if(BUILD_TESTING)
   add_executable(multi_layer_ndt_backend_test ../tests/backend_test.cc)
   target_link_libraries(multi_layer_ndt_backend_test multi_layer_ndt_core)
   add_test(NAME multi_layer_ndt_backend COMMAND multi_layer_ndt_backend_test)
+  add_executable(multi_layer_ndt_feature_test ../tests/feature_test.cc)
+  target_link_libraries(multi_layer_ndt_feature_test multi_layer_ndt_core)
+  add_test(NAME multi_layer_ndt_features COMMAND multi_layer_ndt_feature_test)
 endif()

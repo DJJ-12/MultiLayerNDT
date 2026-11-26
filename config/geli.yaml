@@ -10,7 +10,18 @@ sensor:
   # 仅使用前两帧运动估计作恒速去畸变，不订阅IMU/GPS；缺少时间字段时使用原点云。
   deskew: true
 
+# 扫描线深度滤波选点；false保留当前全量点云NDT链路。
+features:
+  enabled: false
+  highpass_half_window: 3       # 高通窗口2h+1个点，按ring内方位角排列
+  highpass_threshold: 0.005    # |原始深度-局部均值|/深度，越小corner越多
+  lowpass_half_window: 3        # 低通窗口2s+1；残差能量再用相同窗口统计
+  lowpass_threshold: 0.0015    # 归一化残差RMS，越大surface候选越多
+  max_gap_deg: 2.0             # 不跨越比此角度更大的扫描线缺口
+  occlusion_depth_ratio: 0.05  # 深度跳变比例，屏蔽遮挡远侧与孤立尖峰
+
 ndt:
+  num_layers: 3  # 使用resolutions/weights前N项；增加层数时补齐对应项
   # 每轮所有层同时参与。weights与resolutions一一对应，内部归一化到权重和为1。
   resolutions: [2.0, 1.0, 0.5]
   weights: [1.0, 1.0, 1.0]

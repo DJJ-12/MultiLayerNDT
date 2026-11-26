@@ -33,7 +33,7 @@ private:
     std::mutex processing_mutex_, saving_mutex_;
     std::string lidar_topic_, time_field_, map_frame_, lidar_frame_, save_path_;
     double time_scale_ = 1.0, min_range_ = 1.0, max_range_ = 100.0, save_voxel_ = .1;
-    bool deskew_ = true, pub_tf_ = true, time_absolute_ = false;
+    bool deskew_ = true, pub_tf_ = true, time_absolute_ = false, use_features_ = false;
     std::size_t frames_ = 0;
     nav_msgs::msg::Path path_;
     std_msgs::msg::Header last_header_;

@@ -56,6 +56,7 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     MappingOptions options;
     options.ndt.resolutions = ndt["resolutions"].as<std::vector<double>>();
     options.ndt.weights = ndt["weights"].as<std::vector<double>>();
+    options.ndt.num_layers = ndt["num_layers"].as<int>(static_cast<int>(options.ndt.resolutions.size()));
     options.ndt.source_voxel = ndt["source_voxel"].as<double>();
     options.ndt.max_iterations = ndt["max_iterations"].as<int>();
     options.ndt.num_threads = ndt["num_threads"].as<int>();
@@ -66,6 +67,16 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     options.keyframe_voxel = map["keyframe_voxel"].as<double>();
     options.submap_radius = map["submap_radius"].as<double>();
     options.submap_keyframes = map["submap_keyframes"].as<int>();
+    if (const auto features = yaml["features"]) {
+        options.features.enabled = features["enabled"].as<bool>(false);
+        options.features.highpass_half_window = features["highpass_half_window"].as<int>(3);
+        options.features.lowpass_half_window = features["lowpass_half_window"].as<int>(3);
+        options.features.highpass_threshold = features["highpass_threshold"].as<double>(0.005);
+        options.features.lowpass_threshold = features["lowpass_threshold"].as<double>(0.0015);
+        options.features.max_gap_deg = features["max_gap_deg"].as<double>(2.0);
+        options.features.occlusion_depth_ratio = features["occlusion_depth_ratio"].as<double>(0.05);
+    }
+    use_features_ = options.features.enabled;
     if (const auto loop = yaml["loop"]) {
         options.loop.loopClosureEnableFlag = loop["loopClosureEnableFlag"].as<bool>(true);
         options.loop.loopClosureFrequency = loop["loopClosureFrequency"].as<double>(1.0);
@@ -100,7 +111,8 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
 #else
     (void)no_ui;
 #endif
-    RCLCPP_INFO(get_logger(), "点云入口=%s，输出目录=%s，联合NDT层数=%zu", lidar_topic_.c_str(), save_path_.c_str(), options.ndt.resolutions.size());
+    RCLCPP_INFO(get_logger(), "点云入口=%s，输出目录=%s，每套金字塔层数=%d，模式=%s", lidar_topic_.c_str(), save_path_.c_str(),
+        options.ndt.num_layers, use_features_ ? "corner/surface" : "全量点云");
 }
 MappingNode::~MappingNode() {
 #ifdef MULTI_LAYER_NDT_WITH_UI
@@ -120,7 +132,9 @@ Scan MappingNode::Convert(const sensor_msgs::msg::PointCloud2& message) const {
     };
     const auto* x = field("x"); const auto* y = field("y"); const auto* z = field("z");
     const auto* intensity = field("intensity"); const auto* time = deskew_ ? field(time_field_) : nullptr;
+    const auto* ring = use_features_ ? field("ring") : nullptr;
     if (!x || !y || !z) throw std::runtime_error("点云缺少x/y/z字段");
+    if (use_features_ && !ring) throw std::runtime_error("features.enabled=true时点云必须包含ring字段");
     // 同时支持有row padding的有序点云及大小端数据，不假定time一定是float。
     const std::uint16_t probe = 1;
     const bool host_big = *reinterpret_cast<const std::uint8_t*>(&probe) == 0;
@@ -130,6 +144,7 @@ Scan MappingNode::Convert(const sensor_msgs::msg::PointCloud2& message) const {
     scan.cloud.reset(new PointCloudType);
     scan.cloud->reserve(static_cast<std::size_t>(message.width) * message.height);
     if (time) scan.relative_times.reserve(scan.cloud->points.capacity());
+    if (ring) scan.rings.reserve(scan.cloud->points.capacity());
     for (std::uint32_t row = 0; row < message.height; ++row) for (std::uint32_t col = 0; col < message.width; ++col) {
         const auto offset = static_cast<std::size_t>(row) * message.row_step + static_cast<std::size_t>(col) * message.point_step;
         if (offset + message.point_step > message.data.size()) throw std::runtime_error("点云data长度与width/row_step不一致");
@@ -141,6 +156,7 @@ Scan MappingNode::Convert(const sensor_msgs::msg::PointCloud2& message) const {
         point.intensity = intensity ? ReadField(data, *intensity, reverse) : 0.0;
         if (!std::isfinite(point.intensity)) point.intensity = 0.0;
         scan.cloud->push_back(point);
+        if (ring) scan.rings.push_back(static_cast<std::uint16_t>(ReadField(data, *ring, reverse)));
         if (time) {
             const double relative = time_scale_ * ReadField(data, *time, reverse) - (time_absolute_ ? scan.stamp : 0.0);
             scan.relative_times.push_back(std::isfinite(relative) ? relative : 0.0);
@@ -166,9 +182,11 @@ void MappingNode::ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& c
         Publish(result, cloud->header);
         if (++frames_ % 20 == 1) {
             std::ostringstream scores; for (double score : result.layer_scores) scores << score << ' ';
+            std::ostringstream voxels; for (auto count : result.layer_voxels) voxels << count << ' ';
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-            RCLCPP_INFO(get_logger(), "[联合NDT] 帧=%zu 关键帧=%zu 回环=%zu 迭代=%d 收敛=%d 各层评分=[%s] 总耗时=%.2fms",
-                frames_, result.keyframe_count, result.loop_count, result.iterations, int(result.converged), scores.str().c_str(), ms);
+            RCLCPP_INFO(get_logger(), "[联合NDT] 模式=%s 帧=%zu 关键帧=%zu 回环=%zu 迭代=%d 收敛=%d 源特征(C/S)=%zu/%zu 各层评分=[%s] 有效体素=[%s] 总耗时=%.2fms",
+                use_features_ ? "corner/surface" : "full", frames_, result.keyframe_count, result.loop_count, result.iterations,
+                int(result.converged), result.corner_count, result.surface_count, scores.str().c_str(), voxels.str().c_str(), ms);
         }
     } catch (const std::exception& error) { RCLCPP_ERROR(get_logger(), "点云处理失败: %s", error.what()); }
 }
