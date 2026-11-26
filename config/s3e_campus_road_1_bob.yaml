@@ -27,6 +27,16 @@ mapping:
   submap_radius: 50.0
   submap_keyframes: 20
 
+# 从原LIO-SAM移植的后端/回环；频率按雷达时间计算，ICP在独立线程运行。
+lio_sam:
+  loopClosureEnableFlag: true
+  loopClosureFrequency: 1.0
+  historyKeyframeSearchRadius: 15.0   # m
+  historyKeyframeSearchTimeDiff: 30.0 # s
+  historyKeyframeSearchNum: 25
+  historyKeyframeFitnessScore: 0.3   # ICP均方误差，m²；越小要求越严格
+  mappingSurfLeafSize: 0.4          # 回环点云降采样，m
+
 output:
   with_ui: true
   pub_tf: true

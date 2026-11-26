@@ -65,6 +65,7 @@ bool PangolinWindowImpl::UpdateGlobalMap() {
     }
 
     std::lock_guard<std::mutex> lock(mtx_map_cloud_);
+    if (map_pose_changed_) { cloud_map_ui_.clear(); map_pose_changed_ = false; }
     for (const auto &cp : cloud_global_map_) {
         if (cloud_map_ui_.find(cp.first) != cloud_map_ui_.end()) {
             continue;
@@ -129,6 +130,10 @@ bool PangolinWindowImpl::UpdateDynamicMap() {
 
 bool PangolinWindowImpl::UpdateCurrentScan() {
     UL lock(mtx_current_scan_);
+    if (scan_reset_.exchange(false)) {
+        scans_.clear();
+        current_scan_ui_ = std::make_shared<ui::UiCloud>();
+    }
     if (current_scan_ != nullptr && !current_scan_->empty() && current_scan_need_update_) {
         if (current_scan_ui_) {
             current_scan_ui_->SetRenderColor(ui::UiCloud::UseColor::HEIGHT_COLOR);
@@ -158,6 +163,7 @@ bool PangolinWindowImpl::UpdateCurrentScan() {
 
 bool PangolinWindowImpl::UpdateState() {
     std::lock_guard<std::mutex> lock(mtx_nav_state_);
+    if (trajectory_reset_) { traj_newest_state_->Clear(); trajectory_reset_ = false; }
     for (const auto& pose : ekf_pose_queue_) traj_newest_state_->AddPt(pose);
     for (const auto& pose : gps_pose_queue_) traj_gps_->AddPt(pose);
     for (const auto& pose : ndt_pose_queue_) traj_ndt_->AddPt(pose);

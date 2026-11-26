@@ -63,6 +63,8 @@ class PangolinWindowImpl {
     std::atomic<bool> kf_result_need_update_{false};      // 卡尔曼滤波结果
     std::atomic<bool> current_scan_need_update_{false};   // 更新当前扫描
     std::atomic<bool> lidarloc_need_update_{false};       // 雷达位置？
+    bool map_pose_changed_ = false, trajectory_reset_ = false;  // 分别由地图锁、状态锁保护。
+    std::atomic<bool> scan_reset_{false};
 
     pcl::PointCloud<PointType>::Ptr current_scan_ = nullptr;  // 当前scan
     SE3 newest_frontend_pose_;                                // 最新pose

@@ -20,6 +20,7 @@ public:
     ~MappingNode();
     void Subscribe();
     void ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& cloud);
+    void Finish();
     bool Save();
     bool Alive();
     bool HasUI() const;
@@ -32,9 +33,10 @@ private:
     std::mutex processing_mutex_, saving_mutex_;
     std::string lidar_topic_, time_field_, map_frame_, lidar_frame_, save_path_;
     double time_scale_ = 1.0, min_range_ = 1.0, max_range_ = 100.0, save_voxel_ = .1;
-    bool deskew_ = true, pub_tf_ = true;
+    bool deskew_ = true, pub_tf_ = true, time_absolute_ = false;
     std::size_t frames_ = 0;
     nav_msgs::msg::Path path_;
+    std_msgs::msg::Header last_header_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
     rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;

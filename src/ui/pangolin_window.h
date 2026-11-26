@@ -29,13 +29,15 @@ class PangolinWindow {
     bool Init();
 
     /// 更新激光地图点云，在激光定位中的地图发生改变时，由fusion调用
-    void UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud);
+    void UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud, bool reset = false);
 
     /// 更新动态图层点云
     void UpdatePointCloudDynamic(const std::map<int, CloudPtr>& cloud);
 
     /// 更新kalman滤波器状态
     void UpdateNavState(const NavState& state);
+    /// 回环后替换显示轨迹；不修改前端的连续运动历史。
+    void UpdateTrajectory(const std::vector<NavState>& poses);
 
     /// 原始观测轨迹：GPS为绿色，NDT为黄色，输入均为map系位姿。
     void UpdateGpsPose(const SE3& pose);

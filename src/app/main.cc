@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
                         if (!rclcpp::ok() || !node->Alive()) return false;
                         node->ProcessCloud(cloud); return true;
                     }).Go();
+                node->Finish();
                 if (!node->Save()) status = 1;
             }
             // 离线读完后保留UI供检查；无UI时直接退出。在线始终由订阅回调计算。
@@ -54,7 +55,10 @@ int main(int argc, char** argv) {
         } catch (const std::exception& error) { RCLCPP_ERROR(node->get_logger(), "%s", error.what()); status = 1; }
         rclcpp::shutdown();  // 同时覆盖执行器线程尚未进入spin的退出情况。
         executor.cancel(); callbacks.join();
-        if (bag.empty() && !node->Save()) status = 1;
+        if (bag.empty()) {
+            node->Finish();
+            if (!node->Save()) status = 1;
+        }
         executor.remove_node(node); node.reset();
         rclcpp::shutdown();
         return status;

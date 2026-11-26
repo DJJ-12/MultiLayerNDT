@@ -104,7 +104,7 @@ void PangolinWindow::Quit() {
     }
 }
 
-void PangolinWindow::UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud) {
+void PangolinWindow::UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud, bool reset) {
     std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     auto impl = impl_.lock();
     if (!impl) {
@@ -112,6 +112,7 @@ void PangolinWindow::UpdatePointCloudGlobal(const std::map<int, CloudPtr>& cloud
     }
     std::lock_guard<std::mutex> lock(impl->mtx_map_cloud_);
     impl->cloud_global_map_ = cloud;
+    impl->map_pose_changed_ = impl->map_pose_changed_ || reset;
     impl->cloud_global_need_update_.store(true);
 }
 
@@ -165,6 +166,17 @@ void PangolinWindow::UpdateGpsPose(const SE3& pose) {
     if (!impl) return;
     std::lock_guard<std::mutex> lock(impl->mtx_nav_state_);
     impl->gps_pose_queue_.push_back(pose);
+}
+
+void PangolinWindow::UpdateTrajectory(const std::vector<NavState>& poses) {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    auto impl = impl_.lock();
+    if (!impl) return;
+    std::lock_guard<std::mutex> lock(impl->mtx_nav_state_);
+    impl->ekf_pose_queue_.clear();
+    for (const auto& state : poses) impl->ekf_pose_queue_.push_back(state.pose);
+    impl->trajectory_reset_ = true;
+    impl->scan_reset_.store(true);
 }
 
 void PangolinWindow::UpdateNdtPose(const SE3& pose) {

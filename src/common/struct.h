@@ -50,8 +50,24 @@ struct NdtFit {
     std::vector<double> layer_scores;
 };
 
+// 沿用原LIO-SAM回环参数名；频率按雷达时间控制，离线快速读包也会检查回环。
+struct LoopOptions {
+    bool loopClosureEnableFlag = true;
+    double loopClosureFrequency = 1.0;
+    double historyKeyframeSearchRadius = 15.0, historyKeyframeSearchTimeDiff = 30.0;
+    int historyKeyframeSearchNum = 25;
+    double historyKeyframeFitnessScore = 0.3, mappingSurfLeafSize = 0.4;
+};
+
+struct LoopConstraint {
+    std::size_t from = 0, to = 0;
+    SE3 relative_pose;
+    double fitness = 0.0;
+};
+
 struct MappingOptions {
     NdtOptions ndt;
+    LoopOptions loop;
     double keyframe_distance = 1.0, keyframe_angle = 0.2, keyframe_time = 2.0;
     double submap_radius = 50.0, keyframe_voxel = 0.15;
     int submap_keyframes = 20;
@@ -60,7 +76,8 @@ struct MappingOptions {
 struct Keyframe {
     double stamp = 0.0;
     SE3 pose;
-    CloudPtr cloud;  // map系点云只存一份，供子地图、UI和保存共用。
+    CloudPtr cloud;  // 自身雷达系点云只存一份，回环后按新位姿重建地图。
+    SE3 odom_pose;   // 连续前端位姿；图优化不能改变里程计边或运动预测。
 };
 
 struct MappingResult {
@@ -68,7 +85,8 @@ struct MappingResult {
     SE3 prediction;
     CloudPtr scan;
     bool valid = false, converged = false, keyframe_added = false, map_updated = false;
-    std::size_t keyframe_count = 0;
+    bool graph_updated = false;
+    std::size_t keyframe_count = 0, loop_count = 0;
     int iterations = 0;
     std::vector<double> layer_scores;
     std::map<int, CloudPtr> local_map;
@@ -76,6 +94,6 @@ struct MappingResult {
 
 struct MapData {
     std::vector<Keyframe> keyframes;
-    std::vector<NavState> trajectory;
+    std::vector<NavState> trajectory;  // 连续odom系；显示和保存时应用关键帧图优化校正。
 };
 }  // namespace lightning

@@ -50,6 +50,7 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     lidar_topic_ = sensor["lidar_topic"].as<std::string>();
     time_field_ = sensor["time_field"].as<std::string>();
     time_scale_ = sensor["time_scale"].as<double>();
+    time_absolute_ = sensor["time_absolute"].as<bool>(false);
     deskew_ = sensor["deskew"].as<bool>();
     min_range_ = sensor["min_range"].as<double>(); max_range_ = sensor["max_range"].as<double>();
     MappingOptions options;
@@ -65,6 +66,15 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     options.keyframe_voxel = map["keyframe_voxel"].as<double>();
     options.submap_radius = map["submap_radius"].as<double>();
     options.submap_keyframes = map["submap_keyframes"].as<int>();
+    if (const auto loop = yaml["lio_sam"]) {
+        options.loop.loopClosureEnableFlag = loop["loopClosureEnableFlag"].as<bool>(true);
+        options.loop.loopClosureFrequency = loop["loopClosureFrequency"].as<double>(1.0);
+        options.loop.historyKeyframeSearchRadius = loop["historyKeyframeSearchRadius"].as<double>(15.0);
+        options.loop.historyKeyframeSearchTimeDiff = loop["historyKeyframeSearchTimeDiff"].as<double>(30.0);
+        options.loop.historyKeyframeSearchNum = loop["historyKeyframeSearchNum"].as<int>(25);
+        options.loop.historyKeyframeFitnessScore = loop["historyKeyframeFitnessScore"].as<double>(0.3);
+        options.loop.mappingSurfLeafSize = loop["mappingSurfLeafSize"].as<double>(0.4);
+    }
     mapping_ = std::make_unique<Mapping>(options);
     map_frame_ = output["map_frame"].as<std::string>(); lidar_frame_ = output["lidar_frame"].as<std::string>();
     save_path_ = save_path.empty() ? output["save_path"].as<std::string>() : save_path;
@@ -132,7 +142,7 @@ Scan MappingNode::Convert(const sensor_msgs::msg::PointCloud2& message) const {
         if (!std::isfinite(point.intensity)) point.intensity = 0.0;
         scan.cloud->push_back(point);
         if (time) {
-            const double relative = time_scale_ * ReadField(data, *time, reverse);
+            const double relative = time_scale_ * ReadField(data, *time, reverse) - (time_absolute_ ? scan.stamp : 0.0);
             scan.relative_times.push_back(std::isfinite(relative) ? relative : 0.0);
         }
     }
@@ -150,14 +160,15 @@ void MappingNode::ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& c
         std::lock_guard<std::mutex> lock(processing_mutex_);
         const auto result = mapping_->Process(scan);
         if (!result.valid) return;
+        last_header_ = cloud->header;
         if (frames_ == 0) RCLCPP_INFO(get_logger(), "首帧有效点=%zu，点内时间=%s，第一帧建立map原点",
             scan.cloud->size(), scan.relative_times.empty() ? "无/未启用" : "已转换为相对秒");
         Publish(result, cloud->header);
         if (++frames_ % 20 == 1) {
             std::ostringstream scores; for (double score : result.layer_scores) scores << score << ' ';
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-            RCLCPP_INFO(get_logger(), "[联合NDT] 帧=%zu 关键帧=%zu 迭代=%d 收敛=%d 各层评分=[%s] 总耗时=%.2fms",
-                frames_, result.keyframe_count, result.iterations, int(result.converged), scores.str().c_str(), ms);
+            RCLCPP_INFO(get_logger(), "[联合NDT] 帧=%zu 关键帧=%zu 回环=%zu 迭代=%d 收敛=%d 各层评分=[%s] 总耗时=%.2fms",
+                frames_, result.keyframe_count, result.loop_count, result.iterations, int(result.converged), scores.str().c_str(), ms);
         }
     } catch (const std::exception& error) { RCLCPP_ERROR(get_logger(), "点云处理失败: %s", error.what()); }
 }
@@ -175,10 +186,17 @@ void MappingNode::Publish(const MappingResult& result, const std_msgs::msg::Head
         transform.transform.rotation = pose.pose.orientation;
         tf_->sendTransform(transform);
     }
-    if (result.keyframe_added) {
-        path_.header = pose.header; path_.poses.push_back(pose); path_pub_->publish(path_);
+    if (result.graph_updated) {
+        path_.poses.clear();
+        for (const auto& frame : mapping_->Data().keyframes) {
+            auto key_pose = pose;
+            key_pose.header.stamp = rclcpp::Time(static_cast<std::int64_t>(std::llround(frame.stamp * 1e9))).to_msg();
+            key_pose.pose = ToMessage(frame.pose); path_.poses.push_back(key_pose);
+        }
     }
-    if (scan_pub_->get_subscription_count()) {
+    else if (result.keyframe_added) path_.poses.push_back(pose);
+    if (result.keyframe_added || result.graph_updated) { path_.header = pose.header; path_pub_->publish(path_); }
+    if (result.scan && scan_pub_->get_subscription_count()) {
         sensor_msgs::msg::PointCloud2 message;
         pcl::toROSMsg(*result.scan, message); message.header = header; message.header.frame_id = lidar_frame_;
         scan_pub_->publish(message);
@@ -192,15 +210,22 @@ void MappingNode::Publish(const MappingResult& result, const std_msgs::msg::Head
 #ifdef MULTI_LAYER_NDT_WITH_UI
     if (ui_) {
         ui_->UpdateNavState(result.state);
-        ui_->UpdateScan(result.scan, result.state.pose);
-        if (result.map_updated) ui_->UpdatePointCloudGlobal(result.local_map);
-        if (result.keyframe_added) {
+        if (result.graph_updated) ui_->UpdateTrajectory(Mapping::CorrectedTrajectory(mapping_->Data()));
+        if (result.scan) ui_->UpdateScan(result.scan, result.state.pose);
+        if (result.map_updated) ui_->UpdatePointCloudGlobal(result.local_map, result.graph_updated);
+        if (result.keyframe_added || result.graph_updated) {
             std::vector<NavState> poses;
             for (const auto& frame : mapping_->Data().keyframes) { NavState state; state.pose = frame.pose; poses.push_back(state); }
             ui_->UpdateKeyframePoses(poses);
         }
     }
 #endif
+}
+
+void MappingNode::Finish() {
+    std::lock_guard<std::mutex> processing(processing_mutex_);
+    const auto result = mapping_->Finish();
+    if (result.valid && rclcpp::ok()) Publish(result, last_header_);
 }
 
 bool MappingNode::Save() {

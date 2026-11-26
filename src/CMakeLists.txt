@@ -1,13 +1,16 @@
 add_library(multi_layer_ndt_core STATIC
   core/mapping/multi_layer_ndt.cc
   core/mapping/mapping.cc
+  core/lio_sam/map_optimization.cpp
+  core/lio_sam/loop.cpp
   core/localization/GlobalLocalizer/ndt_omp/multigrid_ndt_omp.cpp
   core/localization/GlobalLocalizer/ndt_omp/multi_voxel_grid_covariance_omp.cpp)
 target_include_directories(multi_layer_ndt_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core/localization
-  ${PROJECT_SOURCE_DIR}/thirdparty ${PCL_INCLUDE_DIRS})
+  ${PROJECT_SOURCE_DIR}/thirdparty ${PCL_INCLUDE_DIRS} ${GTSAM_INCLUDE_DIR})
 target_compile_definitions(multi_layer_ndt_core PUBLIC PCL_NO_PRECOMPILE SOPHUS_USE_BASIC_LOGGING)
-target_link_libraries(multi_layer_ndt_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
+target_link_libraries(multi_layer_ndt_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES} OpenMP::OpenMP_CXX
+  gtsam glog::glog Threads::Threads)
 add_executable(run_multi_layer_ndt app/main.cc wrapper/mapping_node.cc wrapper/bag_io.cc)
 ament_target_dependencies(run_multi_layer_ndt rclcpp ament_index_cpp sensor_msgs std_msgs
   geometry_msgs nav_msgs std_srvs tf2_ros pcl_conversions rosbag2_cpp rosbag2_storage)
@@ -24,4 +27,7 @@ if(BUILD_TESTING)
   add_executable(multi_layer_ndt_test ../tests/multi_layer_ndt_test.cc)
   target_link_libraries(multi_layer_ndt_test multi_layer_ndt_core)
   add_test(NAME multi_layer_ndt_core COMMAND multi_layer_ndt_test)
+  add_executable(multi_layer_ndt_backend_test ../tests/backend_test.cc)
+  target_link_libraries(multi_layer_ndt_backend_test multi_layer_ndt_core)
+  add_test(NAME multi_layer_ndt_backend COMMAND multi_layer_ndt_backend_test)
 endif()

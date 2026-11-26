@@ -75,6 +75,7 @@ int main() {
         Vec6d g; Mat6d h; coarse.Evaluate(target, pose, g, h, scores);
         Require(scores[1] == 0 && scores[2] == 0, "zero-weight layers changed objective");
         MappingOptions mapping_options;
+        mapping_options.loop.loopClosureEnableFlag = false;
         mapping_options.ndt = options; mapping_options.ndt.source_voxel = .02;
         mapping_options.keyframe_voxel = .02; mapping_options.keyframe_distance = .02;
         Mapping mapping(mapping_options);

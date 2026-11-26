@@ -1,0 +1,47 @@
+# 适配原lightning-lm/config/chaosuan.yaml的点云入口和回环参数。
+# 纯激光、CPU建图。无需预建地图，第一帧雷达坐标系作为map系。
+sensor:
+  lidar_topic: "/cx/cloud"
+  min_range: 1.0
+  max_range: 1000.0
+  # 点内时间相对header.stamp；time通常是float秒，t常为uint32纳秒。
+  time_field: "time"
+  time_scale: 1.0
+  # 仅使用前两帧运动估计作恒速去畸变，不订阅IMU/GPS；缺少时间字段时使用原点云。
+  deskew: true
+
+ndt:
+  # 每轮所有层同时参与。weights与resolutions一一对应，内部归一化到权重和为1。
+  resolutions: [2.0, 1.0, 0.5]
+  weights: [1.0, 1.0, 1.0]
+  source_voxel: 0.3
+  num_threads: 4
+  max_iterations: 30
+  epsilon: 0.005
+  max_step: 0.3
+
+mapping:
+  keyframe_distance: 1.0
+  keyframe_angle: 0.2   # rad
+  keyframe_time: 2.0   # s，只对收敛帧保存关键帧
+  keyframe_voxel: 0.15
+  submap_radius: 50.0
+  submap_keyframes: 20
+
+# 从原LIO-SAM移植的后端/回环；频率按雷达时间计算，ICP在独立线程运行。
+lio_sam:
+  loopClosureEnableFlag: true
+  loopClosureFrequency: 1.0
+  historyKeyframeSearchRadius: 15.0 # m
+  historyKeyframeSearchTimeDiff: 30.0 # s
+  historyKeyframeSearchNum: 25
+  historyKeyframeFitnessScore: 0.3 # ICP均方误差，m²；越小要求越严格
+  mappingSurfLeafSize: 0.4 # 回环点云降采样，m
+
+output:
+  with_ui: true
+  pub_tf: false
+  map_frame: "map"
+  lidar_frame: "lidar"
+  save_path: "./maps/chaosuan"
+  save_voxel: 0.1
