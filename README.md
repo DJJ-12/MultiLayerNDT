@@ -62,18 +62,18 @@ H * delta = -g
 有效但未收敛的结果仍用于位姿传播，暂不加入关键帧；无有效对应时沿运动预测传播。
 `converged`是数值收敛，不能保证匹配一定正确，连续退化或错误关键帧仍可能导致漂移。
 
-## LIO-SAM后端与回环
+## 位姿图后端与回环
 
-`core/lio_sam/map_optimization.cpp`提取原`addOdomFactor / addLoopFactor / saveKeyFramesAndFactor / correctPoses`中的纯位姿图部分：首帧先验、相邻关键帧BetweenFactor、回环BetweenFactor、iSAM2增量更新，回环后额外更新5次并写回全部关键帧。
+`core/backend/pose_graph.cpp`提取原`addOdomFactor / addLoopFactor / saveKeyFramesAndFactor / correctPoses`中的纯位姿图部分：首帧先验、相邻关键帧BetweenFactor、回环BetweenFactor、iSAM2增量更新，回环后额外更新5次并写回全部关键帧。
 原有里程计因子的方差继续使用旋转`1e-6 rad²`、平移`1e-4 m²`；当前纯激光程序把首帧六自由度固定为地图原点，没有引入原LIO-SAM的IMU或GPS因子。
 
-`core/lio_sam/loop.cpp`沿用原来的距离/时间候选、历史邻域叠加、ICP验证与回环相对位姿方向。因为NDT前端没有LOAM角点/面点，回环使用降采样后的完整关键帧。历史目标排除当前帧及时间过近的帧，避免把自身点云算成回环。ICP噪声沿用原实现，以fitness建立对角方差，零误差保留数值下限。
+`core/backend/loop.cpp`沿用原来的距离/时间候选、历史邻域叠加、ICP验证与回环相对位姿方向。因为NDT前端没有LOAM角点/面点，回环使用降采样后的完整关键帧。历史目标排除当前帧及时间过近的帧，避免把自身点云算成回环。ICP噪声沿用原实现，以fitness建立对角方差，零误差保留数值下限。
 
 ICP在独立线程运行，只接收不可变关键帧快照并提交回环约束；iSAM2始终在建图调用线程更新。`loopClosureFrequency`按雷达时间限频，离线快速回放也会触发检查；待检查快照保留最新一份。读包结束强制检查末端并等待完成，回环无需等下一个关键帧才能入图。
 
 回环校正不会改写连续odom运动历史。`map<-odom`校正用于下一帧NDT初值和当前输出，防止把图优化跳变当成车辆速度。活动子地图及各层NDT体素立即失效重建；UI重画校正后的轨迹、关键帧和局部地图。逐帧历史轨迹在相邻关键帧之间插值应用SE3校正，关键帧时刻与后端结果一致。
 
-所有配置的`lio_sam`段沿用原参数名。`loopClosureEnableFlag: false`关闭回环检测，保留里程计因子图，方便对照。日志`[LIO-SAM][回环]`表示ICP通过，`[LIO-SAM][回环入图]`和`[LIO-SAM][图优化]`表示约束已用于后端；`[联合NDT]`同时显示累计回环数。
+所有配置的`loop`段沿用原参数名。`loopClosureEnableFlag: false`关闭回环检测，保留里程计因子图，方便对照。日志`[后端][回环]`表示ICP通过，`[后端][回环入图]`和`[后端][图优化]`表示约束已用于后端；`[联合NDT]`同时显示累计回环数。
 
 ## 点云与时间
 

@@ -1,4 +1,4 @@
-#include "core/lio_sam/map_optimization.h"
+#include "core/backend/pose_graph.h"
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <glog/logging.h>
@@ -47,7 +47,7 @@ bool PoseGraph::Update(std::vector<Keyframe>& keyframes) {
         // 沿用原addLoopFactor：ICP均方误差作为回环噪声，零误差时保留数值下限。
         auto noise = gtsam::noiseModel::Diagonal::Variances(Vec6d::Constant(std::max(loop.fitness, 1e-6)));
         graph.add(gtsam::BetweenFactor<gtsam::Pose3>(loop.from, loop.to, ToGtsam(loop.relative_pose), noise));
-        LOG(INFO) << "[LIO-SAM][回环入图] from=" << loop.from << " to=" << loop.to << " fitness=" << loop.fitness;
+        LOG(INFO) << "[后端][回环入图] from=" << loop.from << " to=" << loop.to << " fitness=" << loop.fitness;
     }
     isam_->update(graph, initial);
     isam_->update();
@@ -58,7 +58,7 @@ bool PoseGraph::Update(std::vector<Keyframe>& keyframes) {
     for (std::size_t id = first; id < keyframes.size(); ++id) keyframes[id].pose = FromGtsam(estimate.at<gtsam::Pose3>(id));
     graph_size_ = keyframes.size();
     loop_count_ += loops.size();
-    if (!loops.empty()) LOG(INFO) << "[LIO-SAM][图优化] keyframes=" << graph_size_ << " loops=" << loop_count_;
+    if (!loops.empty()) LOG(INFO) << "[后端][图优化] keyframes=" << graph_size_ << " loops=" << loop_count_;
     return !loops.empty();
 }
 

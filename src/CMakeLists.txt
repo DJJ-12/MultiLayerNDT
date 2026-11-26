@@ -1,8 +1,8 @@
 add_library(multi_layer_ndt_core STATIC
   core/mapping/multi_layer_ndt.cc
   core/mapping/mapping.cc
-  core/lio_sam/map_optimization.cpp
-  core/lio_sam/loop.cpp
+  core/backend/pose_graph.cpp
+  core/backend/loop.cpp
   core/localization/GlobalLocalizer/ndt_omp/multigrid_ndt_omp.cpp
   core/localization/GlobalLocalizer/ndt_omp/multi_voxel_grid_covariance_omp.cpp)
 target_include_directories(multi_layer_ndt_core PUBLIC

@@ -1,5 +1,5 @@
 // 回环链路移植自lightning-lm/src/core/lio_sam/loop.cpp。
-#include "core/lio_sam/map_optimization.h"
+#include "core/backend/pose_graph.h"
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -22,9 +22,9 @@ void PoseGraph::loopClosureThread() {
             if (performLoopClosure(snapshot, loop)) {
                 QueueLoop(loop);
                 loopIndexContainer[loop.from] = loop.to;
-                LOG(INFO) << "[LIO-SAM][回环] current=" << loop.from << " previous=" << loop.to << " fitness=" << loop.fitness;
+                LOG(INFO) << "[后端][回环] current=" << loop.from << " previous=" << loop.to << " fitness=" << loop.fitness;
             }
-        } catch (const std::exception& error) { LOG(ERROR) << "[LIO-SAM][回环] " << error.what(); }
+        } catch (const std::exception& error) { LOG(ERROR) << "[后端][回环] " << error.what(); }
         { std::lock_guard<std::mutex> lock(mutex_); busy_ = false; }
         condition_.notify_all();
     }

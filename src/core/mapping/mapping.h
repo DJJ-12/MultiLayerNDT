@@ -2,7 +2,7 @@
 
 #include "common/struct.h"
 #include "core/mapping/multi_layer_ndt.h"
-#include "core/lio_sam/map_optimization.h"
+#include "core/backend/pose_graph.h"
 
 namespace lightning {
 class Mapping {

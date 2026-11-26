@@ -30,8 +30,8 @@ mapping:
   submap_radius: 50.0
   submap_keyframes: 20
 
-# 从原LIO-SAM移植的后端/回环；频率按雷达时间计算，ICP在独立线程运行。
-lio_sam:
+# 后端图优化与回环；频率按雷达时间计算，ICP在独立线程运行。
+loop:
   loopClosureEnableFlag: true
   loopClosureFrequency: 1.0
   historyKeyframeSearchRadius: 15.0 # m

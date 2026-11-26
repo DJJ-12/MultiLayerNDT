@@ -66,7 +66,7 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     options.keyframe_voxel = map["keyframe_voxel"].as<double>();
     options.submap_radius = map["submap_radius"].as<double>();
     options.submap_keyframes = map["submap_keyframes"].as<int>();
-    if (const auto loop = yaml["lio_sam"]) {
+    if (const auto loop = yaml["loop"]) {
         options.loop.loopClosureEnableFlag = loop["loopClosureEnableFlag"].as<bool>(true);
         options.loop.loopClosureFrequency = loop["loopClosureFrequency"].as<double>(1.0);
         options.loop.historyKeyframeSearchRadius = loop["historyKeyframeSearchRadius"].as<double>(15.0);
@@ -190,7 +190,7 @@ void MappingNode::Publish(const MappingResult& result, const std_msgs::msg::Head
         path_.poses.clear();
         for (const auto& frame : mapping_->Data().keyframes) {
             auto key_pose = pose;
-            key_pose.header.stamp = rclcpp::Time(static_cast<std::int64_t>(std::llround(frame.stamp * 1e9))).to_msg();
+            key_pose.header.stamp = rclcpp::Time(static_cast<std::int64_t>(std::llround(frame.stamp * 1e9)));
             key_pose.pose = ToMessage(frame.pose); path_.poses.push_back(key_pose);
         }
     }

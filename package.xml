@@ -2,7 +2,7 @@
 <package format="3">
   <name>multi_layer_ndt</name>
   <version>0.1.0</version>
-  <description>CPU multi-resolution NDT mapping with LIO-SAM pose graph and loop closure.</description>
+  <description>CPU multi-resolution NDT mapping with pose graph optimization and loop closure.</description>
   <maintainer email="gao.xiang.thu@gmail.com">gaoxiang</maintainer>
   <license>Proprietary</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

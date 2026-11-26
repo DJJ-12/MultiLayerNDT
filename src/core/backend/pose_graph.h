@@ -9,7 +9,7 @@
 #include <thread>
 
 namespace lightning {
-// 从原mapOptimization提取的纯位姿图后端；不依赖LOAM前端、IMU或ROS节点。
+// 纯位姿图优化后端；不依赖前端匹配算法、IMU或ROS节点。
 // iSAM2只在调用线程更新，回环线程仅提交相对位姿约束。
 class PoseGraph {
 public:
