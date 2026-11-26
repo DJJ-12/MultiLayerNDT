@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>multi_layer_ndt</name>
+  <version>0.1.0</version>
+  <description>CPU LiDAR mapping with a jointly weighted multi-resolution NDT objective.</description>
+  <maintainer email="gao.xiang.thu@gmail.com">gaoxiang</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>rosbag2_storage</depend>
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>yaml-cpp</depend>
+  <depend>libgoogle-glog-dev</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
