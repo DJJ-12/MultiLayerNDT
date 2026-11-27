@@ -90,9 +90,11 @@ MappingResult Mapping::Process(const Scan& scan) {
     result.graph_updated = UpdateGraph();
     SE3 odom_prediction = data_.trajectory.empty() ? SE3() : data_.trajectory.back().pose;
     Vec6d body_velocity = Vec6d::Zero();
-    if (data_.trajectory.size() >= 2) {
+    // 特征配准的逐帧抖动不能直接放大成去畸变速度。用最近三个间隔的平均运动。
+    const std::size_t velocity_intervals = options_.features.enabled ? 3 : 1;
+    if (data_.trajectory.size() > velocity_intervals) {
         const auto& last = data_.trajectory.back();
-        const auto& previous = data_.trajectory[data_.trajectory.size() - 2];
+        const auto& previous = data_.trajectory[data_.trajectory.size() - 1 - velocity_intervals];
         body_velocity = (previous.pose.inverse() * last.pose).log() / (last.timestamp_ - previous.timestamp_);
         odom_prediction = last.pose * SE3::exp(body_velocity * (scan.stamp - last.timestamp_));
     }

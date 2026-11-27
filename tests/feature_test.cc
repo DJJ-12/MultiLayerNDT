@@ -216,7 +216,7 @@ int main() {
             Require(((gp - gm) / (2 * step) - h.col(axis)).norm() < 1e-3 * (1 + h.col(axis).norm()), "oblique feature Hessian finite difference");
         }
 
-        // 闭式分数检验投影、距离尺度、QR的pd和线/面的自由方向。
+        // 闭式分数检验几何投影、距离尺度和线/面的自由方向。
         CloudPtr line(new PointCloudType), plane_map(new PointCloudType), query(new PointCloudType);
         for (std::size_t i = 0; i < target.corner->size(); i += 3) line->push_back(target.corner->points[i]);
         for (std::size_t i = 0; i < target.surface->size(); i += 3) plane_map->push_back(target.surface->points[i]);
@@ -245,6 +245,13 @@ int main() {
         wider = features; wider.surface_distance_scale = .4;
         MultiLayerNdt broad_plane(options, wider); broad_plane.SetFeatureTarget({nullptr, plane_map});
         Require(broad_plane.EvaluateFeatures({nullptr, query}, Vec6d::Zero(), gc, hc, unused) > plane_value, "surface distance scale not applied");
+
+        // 平面经过map原点时，也要得到同样的点到面距离和分数。
+        for (auto& q : plane_map->points) q.z = 0.0f;
+        query->points.front().z = static_cast<float>(distance);
+        single_plane.SetFeatureTarget({nullptr, plane_map});
+        Require(std::abs(single_plane.EvaluateFeatures({nullptr, query}, Vec6d::Zero(), gc, hc, unused) - plane_value) < 1e-6,
+            "QR plane fit lost a plane through the map origin");
         auto small = options; small.resolutions = {.04, .02, .01}; small.num_layers = 3;
         CloudPtr few(new PointCloudType);
         for (int i = 0; i < 3; ++i) few->push_back(line->points[i]);
@@ -268,8 +275,8 @@ int main() {
             "near-zero oblique line residual was discarded by exponential roundoff");
         CloudPtr cube(new PointCloudType);
         for (int i = 0; i < 8; ++i) {
-            PointType q; q.x = 2.13f + (i & 1 ? .5f : -.5f); q.y = .17f + (i & 2 ? .5f : -.5f);
-            q.z = 3.19f + (i & 4 ? .5f : -.5f); cube->push_back(q);
+            PointType q; q.x = 2.13f + (i & 1 ? .4f : -.4f); q.y = .17f + (i & 2 ? .4f : -.4f);
+            q.z = 3.19f + (i & 4 ? .4f : -.4f); cube->push_back(q);
         }
         query->clear(); p.x = 2.14f; p.y = .18f; p.z = 3.2f; query->push_back(p);
         MultiLayerNdt invalid_geometry(options, features); invalid_geometry.SetFeatureTarget({cube, cube});
@@ -284,9 +291,10 @@ int main() {
         pcl::transformPointCloud(*target.corner, *source.corner, inverse);
         pcl::transformPointCloud(*target.surface, *source.surface, inverse);
         const auto fit = joint.AlignFeatures(source, SE3());
+        const auto fit_error = truth.inverse() * fit.pose;
         Require(fit.valid && fit.corner_matches > 0 && fit.surface_matches > 0 &&
-            (truth.inverse() * fit.pose).translation().norm() < .002 &&
-            (truth.inverse() * fit.pose).so3().log().norm() < .0002, "joint geometric feature pose optimization failed");
+            fit_error.translation().norm() < .002 && fit_error.so3().log().norm() < .0002,
+            "joint geometric feature pose optimization failed");
         const auto full_target = Clusters(0);
         MultiLayerNdt original_ndt(options); original_ndt.SetTarget(full_target);
         const double original_score = original_ndt.Evaluate(full_target, pose, gc, hc, unused);

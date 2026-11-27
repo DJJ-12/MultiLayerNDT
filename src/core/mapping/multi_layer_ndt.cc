@@ -5,6 +5,7 @@
 #include <Eigen/QR>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <pcl/common/transforms.h>
@@ -57,9 +58,10 @@ public:
         return computeDerivatives(gradient, hessian, transformed, pose, full);
     }
     double ScoreGeometry(const std::vector<FeatureCorrespondence>& correspondences, Vec6d& pose,
-                         Vec6d& gradient, Mat6d& hessian, std::vector<double>& scores, bool full) {
+                         Vec6d& gradient, Mat6d& hessian, std::vector<double>& scores, bool full, bool gauss_newton) {
         gradient.setZero(); hessian.setZero(); std::fill(scores.begin(), scores.end(), 0.0);
-        computeAngleDerivatives(pose, full);
+        const bool exact_hessian = full && !gauss_newton;
+        computeAngleDerivatives(pose, exact_hessian);
         const SE3 transform = MultiLayerNdt::ToPose(pose);
         double total = 0.0;
 #pragma omp parallel num_threads(params_.num_threads)
@@ -75,9 +77,9 @@ public:
                 const auto& c = correspondences[i];
                 if (c.layer_weights.empty()) continue;
                 Vec3d point = c.point;
-                computePointDerivatives(point, point_gradient, point_hessian, full);
+                computePointDerivatives(point, point_gradient, point_hessian, exact_hessian);
                 const Vec3d error = transform * point - c.reference;
-                const double value = updateDerivatives(g, h, point_gradient, point_hessian, error, c.metric, full, true);
+                const double value = updateDerivatives(g, h, point_gradient, point_hessian, error, c.metric, full, true, gauss_newton);
                 sum += value;
                 for (std::size_t layer = 0; layer < parts.size(); ++layer) parts[layer] += c.layer_weights[layer] * value;
             }
@@ -172,6 +174,14 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
     Correspondences result;
     const SE3 transform = ToPose(pose);
     const int levels = options_.num_layers;
+    // 不同层共同拟合同一条线或同一个面，支持点必须来自同一尺度的局部邻域。
+    double finest_resolution = std::numeric_limits<double>::infinity();
+    for (int level = 0; level < levels; ++level) {
+        if (options_.weights[level] > 0.0)
+            finest_resolution = std::min(finest_resolution, options_.resolutions[level]);
+    }
+    const double radius = features_.neighbor_radius_factor * finest_resolution;
+    const double radius_squared = radius * radius;
     for (int group = 0; group < 2; ++group) {
         if (!sources[group]) continue;
         result[group].resize(sources[group]->size());
@@ -184,7 +194,6 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
             std::vector<double> weights; weights.reserve(5 * levels);
             std::vector<double> layer_weights(levels);
             Eigen::MatrixXd A(5 * levels, 3);
-            Eigen::VectorXd b(5 * levels);
 #pragma omp for schedule(static)
             for (std::int64_t i = 0; i < static_cast<std::int64_t>(sources[group]->size()); ++i) {
                 const auto& p = sources[group]->points[i];
@@ -196,8 +205,7 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
                     const auto& layer = *layers_[group * levels + level];
                     if (!layer.usable || layer.weight == 0.0) continue;
                     int count = layer.tree->nearestKSearch(search, 5, ids, distances);
-                    const double radius = features_.neighbor_radius_factor * layer.resolution;
-                    while (count && distances[count - 1] > radius * radius) --count;
+                    while (count && distances[count - 1] > radius_squared) --count;
                     if (!count) continue;
                     layer_weights[level] = layer.weight;
                     for (int j = 0; j < count; ++j) {
@@ -213,8 +221,8 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
                 if (centers.size() < 5) continue;
                 const double total = std::accumulate(weights.begin(), weights.end(), 0.0);
                 Vec3d reference = Vec3d::Zero(); Mat3d projection;
+                for (std::size_t j = 0; j < centers.size(); ++j) reference += weights[j] * centers[j] / total;
                 if (group == 0) {
-                    for (std::size_t j = 0; j < centers.size(); ++j) reference += weights[j] * centers[j] / total;
                     Mat3d covariance = Mat3d::Zero();
                     for (std::size_t j = 0; j < centers.size(); ++j) {
                         const Vec3d error = centers[j] - reference;
@@ -226,23 +234,22 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
                     const Vec3d direction = eigen.eigenvectors().col(2);
                     projection = Mat3d::Identity() - direction * direction.transpose();
                 } else {
-                    // 沿用LIO-SAM的QR平面拟合：A*[pa,pb,pc]'=-1，随后归一化pd。
+                    // 先减去质心，用列主元QR选出两个切向坐标，求第三个坐标对它们的线性关系。
+                    // 平面经过质心。固定全局pd=1会漏掉经过map原点的平面。
                     const int count = static_cast<int>(centers.size());
                     for (int j = 0; j < count; ++j) {
-                        const double weight = std::sqrt(weights[j]);
-                        A.row(j) = weight * centers[j].transpose(); b(j) = -weight;
+                        A.row(j) = std::sqrt(weights[j]) * (centers[j] - reference).transpose();
                     }
                     const auto qr = A.topRows(count).colPivHouseholderQr();
-                    if (qr.rank() < 3) continue;
-                    Vec3d normal = qr.solve(b.head(count));
-                    const double norm = normal.norm();
-                    if (!normal.allFinite() || norm <= 1e-12) continue;
-                    const double pd = 1.0 / norm;
-                    normal /= norm;
+                    if (qr.rank() < 2) continue;
+                    const auto& R = qr.matrixR();
+                    Vec3d coefficients;
+                    coefficients.head<2>() = R.topLeftCorner<2, 2>().triangularView<Eigen::Upper>().solve(-R.block<2, 1>(0, 2));
+                    coefficients.z() = 1.0;
+                    const Vec3d normal = (qr.colsPermutation() * coefficients).normalized();
                     bool plane_valid = true;
-                    for (const auto& q : centers) if (std::abs(normal.dot(q) + pd) > 0.2) { plane_valid = false; break; }
+                    for (const auto& q : centers) if (std::abs(normal.dot(q - reference)) > 0.2) { plane_valid = false; break; }
                     if (!plane_valid) continue;
-                    reference = -pd * normal;  // QR平面未必经过邻域质心，必须保留pd。
                     projection = normal * normal.transpose();
                 }
                 auto& c = result[group][i];
@@ -258,7 +265,7 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
 
 double MultiLayerNdt::EvaluateGeometry(const Sources& sources, const Correspondences& correspondences,
                                      const Vec6d& pose, Vec6d& gradient, Mat6d& hessian,
-                                     std::vector<double>& scores, bool full) {
+                                     std::vector<double>& scores, bool full, bool gauss_newton) {
     gradient.setZero(); hessian.setZero(); scores.assign(layers_.size(), 0.0);
     double score = 0.0;
     for (int group = 0; group < 2; ++group) {
@@ -266,7 +273,7 @@ double MultiLayerNdt::EvaluateGeometry(const Sources& sources, const Corresponde
         Vec6d g, p = pose; Mat6d h;
         std::vector<double> parts(options_.num_layers);
         // 跨层拟合后每个源点只计一次分数，不在原来的体素循环中重复添加。
-        const double raw = layers_[group * options_.num_layers]->ScoreGeometry(correspondences[group], p, g, h, parts, full);
+        const double raw = layers_[group * options_.num_layers]->ScoreGeometry(correspondences[group], p, g, h, parts, full, gauss_newton);
         const double normalizer = 0.5 / sources[group]->size();
         score += normalizer * raw;
         gradient.noalias() += normalizer * g; hessian.noalias() += normalizer * h;
@@ -279,8 +286,9 @@ double MultiLayerNdt::EvaluateGeometry(const Sources& sources, const Corresponde
 double MultiLayerNdt::EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
                                     Mat6d& hessian, std::vector<double>& scores, bool full, const Correspondences* fixed) {
     if (features_.enabled) {
-        if (fixed) return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full);
-        return EvaluateGeometry(sources, FindCorrespondences(sources, pose), pose, gradient, hessian, scores, full);
+        // 迭代用固定权重的Gauss–Newton曲率，对外求值仍提供精确Hessian以供核对。
+        if (fixed) return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full, true);
+        return EvaluateGeometry(sources, FindCorrespondences(sources, pose), pose, gradient, hessian, scores, full, false);
     }
     gradient.setZero(); hessian.setZero(); scores.assign(layers_.size(), 0.0);
     std::array<PointCloudType, 2> transformed;

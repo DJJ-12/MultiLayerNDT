@@ -33,7 +33,7 @@ private:
     Correspondences FindCorrespondences(const Sources& sources, const Vec6d& pose) const;
     double EvaluateGeometry(const Sources& sources, const Correspondences& correspondences,
                             const Vec6d& pose, Vec6d& gradient, Mat6d& hessian,
-                            std::vector<double>& scores, bool compute_hessian);
+                            std::vector<double>& scores, bool compute_hessian, bool gauss_newton);
     double EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
                            Mat6d& hessian, std::vector<double>& scores, bool compute_hessian = true,
                            const Correspondences* fixed = nullptr);

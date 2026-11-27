@@ -49,7 +49,7 @@ struct FeatureOptions {
     int N_SCAN = 16, Horizon_SCAN = 2000;
     // 原LIO-SAM曲率阈值，单位m²；不沿用归一化高/低通阈值。
     float edgeThreshold = 1.0f, surfThreshold = 0.1f, odometrySurfLeafSize = 0.4f;
-    // 每层最多取5个质心，搜索半径为本层体素边长的该倍数。
+    // 每层最多取5个质心，各层共用半径为最细启用层边长的该倍数。
     double neighbor_radius_factor = 2.0;
     // 几何分数exp(-距离平方/(2*h*h))的距离尺度，单位m。
     double corner_distance_scale = 0.3, surface_distance_scale = 0.2;
