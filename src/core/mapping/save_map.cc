@@ -7,8 +7,10 @@
 #include <set>
 
 #include <pcl/common/transforms.h>
+#include <pcl/filters/extract_indices.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/segmentation/approximate_progressive_morphological_filter.h>
 
 namespace lightning {
 namespace {
@@ -17,6 +19,34 @@ namespace fs = std::filesystem;
 fs::path PendingFile(fs::path path) {
     path += ".tmp";
     return path;
+}
+
+bool SaveWithoutGround(const fs::path& path, const CloudPtr& map) {
+    // 用XY网格上的局部地面高度处理坡路。距离和网格边长单位为米。
+    pcl::ApproximateProgressiveMorphologicalFilter<PointType> terrain;
+    terrain.setInputCloud(map);
+    terrain.setCellSize(1.0f);
+    terrain.setMaxWindowSize(9);
+    terrain.setSlope(0.1f);
+    terrain.setInitialDistance(0.18f);
+    terrain.setMaxDistance(0.45f);
+    terrain.setNumberOfThreads(1);
+    pcl::PointIndices::Ptr ground(new pcl::PointIndices);
+    terrain.extract(ground->indices);
+
+    pcl::ExtractIndices<PointType> keep;
+    keep.setInputCloud(map);
+    keep.setIndices(ground);
+    keep.setNegative(true);
+    PointCloudType objects;
+    keep.filter(objects);
+    if (!objects.empty()) return pcl::io::savePCDFileBinaryCompressed(path.string(), objects) == 0;
+
+    // PCL 1.12的PCD写入接口拒绝空点云，直接写同字段的零点头。
+    std::ofstream empty(path, std::ios::binary);
+    empty << pcl::PCDWriter::generateHeader(objects, 0) << "DATA binary\n";
+    empty.close();
+    return static_cast<bool>(empty);
 }
 
 bool SaveBlockMap(const fs::path& directory, const PointCloudType& map, int resolution, double voxel_size) {
@@ -115,6 +145,8 @@ bool Mapping::SaveMap(const MapData& data, const std::string& directory, double 
     fs::create_directories(root);
     const auto global_path = root / "global.pcd";
     if (pcl::io::savePCDFileBinaryCompressed(PendingFile(global_path).string(), *sampled) != 0) return false;
+    const auto display_path = root / "global_no_ground.pcd";
+    if (!SaveWithoutGround(PendingFile(display_path), sampled)) return false;
 
     const auto trajectory_path = root / "trajectory.txt";
     std::ofstream trajectory(PendingFile(trajectory_path));
@@ -135,6 +167,7 @@ bool Mapping::SaveMap(const MapData& data, const std::string& directory, double 
 
     if (!trajectory || !poses || !SaveBlockMap(root, *sampled, block_resolution, block_voxel_size)) return false;
     fs::rename(PendingFile(global_path), global_path);
+    fs::rename(PendingFile(display_path), display_path);
     fs::rename(PendingFile(trajectory_path), trajectory_path);
     fs::rename(PendingFile(poses_path), poses_path);
     return true;

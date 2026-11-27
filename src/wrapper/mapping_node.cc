@@ -70,6 +70,7 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     if (const auto features = yaml["features"]) {
         options.features.enabled = features["enabled"].as<bool>(false);
         options.features.exact_hessian = features["exact_hessian"].as<bool>(options.features.exact_hessian);
+        options.features.hessian_constraint_weight = features["hessian_constraint_weight"].as<double>(0.0);
         options.features.N_SCAN = features["N_SCAN"].as<int>(16);
         options.features.Horizon_SCAN = features["Horizon_SCAN"].as<int>(2000);
         options.features.edgeThreshold = features["edgeThreshold"].as<float>(1.0f);
@@ -117,7 +118,10 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     (void)no_ui;
 #endif
     const char* mode = "全量点云";
-    if (use_features_) mode = options.features.exact_hessian ? "特征/精确Hessian" : "特征/Gauss-Newton";
+    if (use_features_) {
+        if (options.features.hessian_constraint_weight > 0) mode = "特征/Hessian软约束";
+        else mode = options.features.exact_hessian ? "特征/精确Hessian" : "特征/Gauss-Newton";
+    }
     RCLCPP_INFO(get_logger(), "点云入口=%s，输出目录=%s，每套金字塔层数=%d，模式=%s", lidar_topic_.c_str(),
         save_path_.c_str(), options.ndt.num_layers, mode);
 }

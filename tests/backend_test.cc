@@ -57,6 +57,11 @@ int main() {
         PointCloudType saved;
         Require(pcl::io::loadPCDFile<PointType>((destination / "global.pcd").string(), saved) == 0 && saved.size() > 20,
             "map export did not transform local keyframes by optimized poses");
+        {
+            std::ifstream display(destination / "global_no_ground.pcd", std::ios::binary);
+            const std::string header((std::istreambuf_iterator<char>(display)), std::istreambuf_iterator<char>());
+            Require(header.find("POINTS 0\n") != std::string::npos, "ground-only map did not save an empty display PCD");
+        }
         std::ifstream file(destination / "trajectory.txt");
         double stamp, x, y, z, qx, qy, qz, qw;
         Vec3d last_exported = Vec3d::Zero();
@@ -90,6 +95,32 @@ int main() {
             "block points were not downsampled in map coordinates");
         Require(!std::filesystem::exists(old_block) && std::filesystem::exists(destination / "notes.txt"),
             "map replacement did not clean its previous blocks or removed unrelated files");
+
+        // 地面带坡度，高处点与地面共用XY，按局部高度去地面并保留完整地图。
+        CloudPtr slope(new PointCloudType);
+        std::size_t elevated_count = 0;
+        for (int x = -16; x <= 16; ++x) {
+            for (int y = -8; y <= 8; ++y) {
+                point.x = .5f * x; point.y = .5f * y; point.z = -1.5f + .08f * point.x; point.intensity = 1;
+                slope->push_back(point);
+                if (y == 0) {
+                    point.z += 1.0f;
+                    point.intensity = 2;
+                    slope->push_back(point);
+                    ++elevated_count;
+                }
+            }
+        }
+        MapData display_map;
+        display_map.keyframes.push_back({0.0, SE3(), slope, SE3()});
+        const auto display_dir = destination / "display";
+        Require(Mapping::SaveMap(display_map, display_dir.string(), .1), "display map save failed");
+        PointCloudType display, complete;
+        Require(pcl::io::loadPCDFile((display_dir / "global_no_ground.pcd").string(), display) == 0 &&
+            display.size() == elevated_count, "ground segmentation did not preserve elevated points");
+        for (const auto& p : display.points) Require(p.intensity == 2, "sloped ground remained in the display map");
+        Require(pcl::io::loadPCDFile((display_dir / "global.pcd").string(), complete) == 0 &&
+            complete.size() == slope->size(), "display filtering removed ground from the full map");
 
         // 距离/时间候选、真实ICP验证、异步提交和末尾等待整条回环链路。
         CloudPtr scene(new PointCloudType);

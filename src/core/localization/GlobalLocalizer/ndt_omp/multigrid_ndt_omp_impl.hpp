@@ -661,7 +661,7 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   const Eigen::Matrix<double, 4, 6> & point_gradient,
   const Eigen::Matrix<double, 24, 6> & point_hessian, const Eigen::Vector3d & x_trans,
   const Eigen::Matrix3d & c_inv, bool compute_hessian, bool geometry,
-  bool gauss_newton) const
+  bool gauss_newton, Eigen::Matrix<double, 6, 6>* information) const
 {
   Eigen::Matrix<double, 1, 4> x_trans4(x_trans[0], x_trans[1], x_trans[2], 0.0f);
   Eigen::Matrix4d c_inv4 = Eigen::Matrix4d::Zero();
@@ -693,6 +693,8 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   if (compute_hessian) {
     Eigen::Matrix<double, 6, 6> point_gradient4_colj_dot_c_inv4_x_point_gradient4_col_i =
       point_gradient.transpose() * c_inv4_x_point_gradient4;
+    if (information)
+      information->noalias() -= e_x_cov_x * point_gradient4_colj_dot_c_inv4_x_point_gradient4_col_i;
     if (gauss_newton) {
       // 固定本轮指数权重，使用负半定的 -score * J'QJ 作为上升求解的曲率。
       hessian.noalias() += e_x_cov_x * point_gradient4_colj_dot_c_inv4_x_point_gradient4_col_i;

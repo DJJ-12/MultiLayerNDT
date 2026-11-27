@@ -33,10 +33,11 @@ private:
     Correspondences FindCorrespondences(const Sources& sources, const Vec6d& pose) const;
     double EvaluateGeometry(const Sources& sources, const Correspondences& correspondences,
                             const Vec6d& pose, Vec6d& gradient, Mat6d& hessian,
-                            std::vector<double>& scores, bool compute_hessian, bool gauss_newton);
+                            std::vector<double>& scores, bool compute_hessian, bool gauss_newton,
+                            Mat6d* information = nullptr);
     double EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
                            Mat6d& hessian, std::vector<double>& scores, bool compute_hessian = true,
-                           const Correspondences* fixed = nullptr);
+                           const Correspondences* fixed = nullptr, Mat6d* information = nullptr);
     NdtFit AlignSources(const Sources& sources, const SE3& prediction);
     NdtOptions options_;
     FeatureOptions features_;

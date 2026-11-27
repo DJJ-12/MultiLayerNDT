@@ -13,6 +13,44 @@
 #include <pcl/kdtree/kdtree_flann.h>
 
 namespace lightning {
+namespace {
+bool SolveWithHessianConstraint(const Mat6d& information, const Mat6d& hessian, const Vec6d& gradient,
+                               double weight, Vec6d& delta) {
+    if (!information.allFinite() || !hessian.allFinite()) return false;
+    const double largest_diagonal = information.diagonal().maxCoeff();
+    if (!(largest_diagonal > 0)) return false;
+
+    // δx=D⁻¹y，D的平方取J'WJ的对角。旋转、平移和牛顿方程都换到同一尺度。
+    const double floor = std::max(1e-12, 1e-8 * largest_diagonal);
+    const Vec6d inverse_scale = information.diagonal().cwiseMax(floor).cwiseSqrt().cwiseInverse();
+    const auto scaling = inverse_scale.asDiagonal();
+    const Mat6d scaled_information = scaling * information * scaling;
+    const Vec6d scaled_gradient = scaling * gradient;
+    Eigen::SelfAdjointEigenSolver<Mat6d> eigen(scaled_information);
+    if (eigen.info() != Eigen::Success) return false;
+
+    // 由J'WJ和-J'Wr还原等价的6行最小二乘，保留线面残差中随增量变化的部分。
+    const double cutoff = 6 * std::numeric_limits<double>::epsilon() * eigen.eigenvalues().maxCoeff();
+    const Vec6d projected_gradient = eigen.eigenvectors().transpose() * scaled_gradient;
+    Vec6d roots = Vec6d::Zero();
+    Eigen::Matrix<double, 12, 1> rhs;
+    rhs.head<6>().setZero();
+    for (int i = 0; i < 6; ++i) {
+        if (eigen.eigenvalues()(i) <= cutoff) continue;
+        roots(i) = std::sqrt(eigen.eigenvalues()(i));
+        rhs(i) = projected_gradient(i) / roots(i);
+    }
+
+    Eigen::Matrix<double, 12, 6> system;
+    system.topRows<6>() = roots.asDiagonal() * eigen.eigenvectors().transpose();
+    const double sqrt_weight = std::sqrt(weight);
+    system.bottomRows<6>() = sqrt_weight * (scaling * hessian * scaling);
+    rhs.tail<6>() = -sqrt_weight * scaled_gradient;
+    delta = scaling * system.completeOrthogonalDecomposition().solve(rhs);
+    return delta.allFinite();
+}
+}  // namespace
+
 class MultiLayerNdt::Layer : public pclomp::MultiGridNormalDistributionsTransform<PointType, PointType> {
 public:
     Layer(const NdtOptions& options, double resolution, double weight, bool geometry)
@@ -58,8 +96,10 @@ public:
         return computeDerivatives(gradient, hessian, transformed, pose, full);
     }
     double ScoreGeometry(const std::vector<FeatureCorrespondence>& correspondences, Vec6d& pose,
-                         Vec6d& gradient, Mat6d& hessian, std::vector<double>& scores, bool full, bool gauss_newton) {
+                         Vec6d& gradient, Mat6d& hessian, std::vector<double>& scores,
+                         bool full, bool gauss_newton, Mat6d* information) {
         gradient.setZero(); hessian.setZero(); std::fill(scores.begin(), scores.end(), 0.0);
+        if (information) information->setZero();
         const bool exact_hessian = full && !gauss_newton;
         computeAngleDerivatives(pose, exact_hessian);
         const SE3 transform = MultiLayerNdt::ToPose(pose);
@@ -68,6 +108,8 @@ public:
         {
             double sum = 0.0;
             Vec6d g = Vec6d::Zero(); Mat6d h = Mat6d::Zero();
+            Mat6d local_information = Mat6d::Zero();
+            Mat6d* const local = information ? &local_information : nullptr;
             std::vector<double> parts(scores.size(), 0.0);
             Eigen::Matrix<double, 4, 6> point_gradient = Eigen::Matrix<double, 4, 6>::Zero();
             Eigen::Matrix<double, 24, 6> point_hessian = Eigen::Matrix<double, 24, 6>::Zero();
@@ -79,13 +121,15 @@ public:
                 Vec3d point = c.point;
                 computePointDerivatives(point, point_gradient, point_hessian, exact_hessian);
                 const Vec3d error = transform * point - c.reference;
-                const double value = updateDerivatives(g, h, point_gradient, point_hessian, error, c.metric, full, true, gauss_newton);
+                const double value = updateDerivatives(g, h, point_gradient, point_hessian, error, c.metric,
+                                                       full, true, gauss_newton, local);
                 sum += value;
                 for (std::size_t layer = 0; layer < parts.size(); ++layer) parts[layer] += c.layer_weights[layer] * value;
             }
 #pragma omp critical(multi_layer_feature_score)
             {
                 total += sum; gradient += g; hessian += h;
+                if (information) *information += local_information;
                 for (std::size_t layer = 0; layer < scores.size(); ++layer) scores[layer] += parts[layer];
             }
         }
@@ -101,6 +145,8 @@ public:
 
 MultiLayerNdt::MultiLayerNdt(NdtOptions options, FeatureOptions features)
     : options_(std::move(options)), features_(std::move(features)) {
+    if (!std::isfinite(features_.hessian_constraint_weight) || features_.hessian_constraint_weight < 0)
+        throw std::invalid_argument("features.hessian_constraint_weight必须为有限非负数");
     if (options_.resolutions.empty() || options_.resolutions.size() != options_.weights.size())
         throw std::invalid_argument("ndt.resolutions与weights需要有相同的非零长度");
     if (options_.num_layers < 1 || options_.num_layers > static_cast<int>(options_.resolutions.size()))
@@ -265,18 +311,21 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
 
 double MultiLayerNdt::EvaluateGeometry(const Sources& sources, const Correspondences& correspondences,
                                      const Vec6d& pose, Vec6d& gradient, Mat6d& hessian,
-                                     std::vector<double>& scores, bool full, bool gauss_newton) {
+                                     std::vector<double>& scores, bool full, bool gauss_newton, Mat6d* information) {
     gradient.setZero(); hessian.setZero(); scores.assign(layers_.size(), 0.0);
+    if (information) information->setZero();
     double score = 0.0;
     for (int group = 0; group < 2; ++group) {
         if (!sources[group] || sources[group]->empty()) continue;
-        Vec6d g, p = pose; Mat6d h;
+        Vec6d g, p = pose; Mat6d h, group_information;
         std::vector<double> parts(options_.num_layers);
         // 跨层拟合后每个源点只计一次分数，不在原来的体素循环中重复添加。
-        const double raw = layers_[group * options_.num_layers]->ScoreGeometry(correspondences[group], p, g, h, parts, full, gauss_newton);
+        const double raw = layers_[group * options_.num_layers]->ScoreGeometry(
+            correspondences[group], p, g, h, parts, full, gauss_newton, information ? &group_information : nullptr);
         const double normalizer = 0.5 / sources[group]->size();
         score += normalizer * raw;
         gradient.noalias() += normalizer * g; hessian.noalias() += normalizer * h;
+        if (information) information->noalias() += normalizer * group_information;
         for (int level = 0; level < options_.num_layers; ++level)
             scores[group * options_.num_layers + level] = parts[level] / sources[group]->size();
     }
@@ -284,9 +333,13 @@ double MultiLayerNdt::EvaluateGeometry(const Sources& sources, const Corresponde
 }
 
 double MultiLayerNdt::EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
-                                    Mat6d& hessian, std::vector<double>& scores, bool full, const Correspondences* fixed) {
+                                    Mat6d& hessian, std::vector<double>& scores, bool full,
+                                    const Correspondences* fixed, Mat6d* information) {
     if (features_.enabled) {
-        if (fixed) return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full, !features_.exact_hessian);
+        if (fixed) {
+            const bool gauss_newton = !features_.exact_hessian && !information;
+            return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full, gauss_newton, information);
+        }
         return EvaluateGeometry(sources, FindCorrespondences(sources, pose), pose, gradient, hessian, scores, full, false);
     }
     gradient.setZero(); hessian.setZero(); scores.assign(layers_.size(), 0.0);
@@ -325,27 +378,57 @@ NdtFit MultiLayerNdt::AlignSources(const Sources& sources, const SE3& prediction
     NdtFit fit;
     fit.pose = prediction;
     Vec6d pose = ToParameters(prediction), gradient;
-    Mat6d hessian;
+    Mat6d hessian, information;
     Correspondences correspondences;
     if (features_.enabled) correspondences = FindCorrespondences(sources, pose);
     const Correspondences* fixed = features_.enabled ? &correspondences : nullptr;
-    double score = EvaluateSources(sources, pose, gradient, hessian, fit.layer_scores, true, fixed);
+    const bool use_constraint = fixed && features_.hessian_constraint_weight > 0;
+    Mat6d* const weighted_information = use_constraint ? &information : nullptr;
+    double score = EvaluateSources(sources, pose, gradient, hessian, fit.layer_scores, true, fixed, weighted_information);
     if (!(score > 0) || !std::isfinite(score)) return fit;
     fit.valid = true;
+    const auto try_step = [&](Vec6d delta, double minimum_step) {
+        if (delta.norm() > options_.max_step) delta *= options_.max_step / delta.norm();
+        for (int attempt = 0; attempt < 8; ++attempt, delta *= 0.5) {
+            const double step_norm = delta.norm();
+            if (step_norm < minimum_step) break;
+            Vec6d trial_gradient;
+            Mat6d trial_hessian;
+            std::vector<double> trial_scores;
+            // 特征路径下一轮会重建对应和Hessian，回溯不重复计算这部分。
+            const double trial_score = EvaluateSources(sources, pose + delta, trial_gradient, trial_hessian,
+                                                       trial_scores, !features_.enabled, fixed);
+            if (!std::isfinite(trial_score) || trial_score < score) continue;
+            pose += delta;
+            score = trial_score; gradient = trial_gradient; hessian = trial_hessian;
+            fit.layer_scores = std::move(trial_scores);
+            ++fit.iterations;
+            if (step_norm < options_.epsilon) fit.converged = true;
+            return true;
+        }
+        return false;
+    };
     for (int iteration = 0; iteration < options_.max_iterations; ++iteration) {
         if (features_.enabled && iteration > 0) {
             // 本轮回溯固定模型，接受位姿后下一轮才重新找对应和拟合。
             correspondences = FindCorrespondences(sources, pose);
-            score = EvaluateSources(sources, pose, gradient, hessian, fit.layer_scores, true, fixed);
+            score = EvaluateSources(sources, pose, gradient, hessian, fit.layer_scores, true, fixed, weighted_information);
             if (!(score > 0) || !std::isfinite(score)) break;
+        }
+        Vec6d delta;
+        if (use_constraint && gradient.allFinite()) {
+            if (SolveWithHessianConstraint(information, hessian, gradient, features_.hessian_constraint_weight, delta) &&
+                gradient.dot(delta) > 0 && try_step(delta, options_.epsilon)) continue;
+            // 联合步过小或分数未上升时，用同一批对应的Gauss–Newton步。
+            hessian = -information;
         }
         if (!gradient.allFinite() || !hessian.allFinite()) break;
         Eigen::JacobiSVD<Mat6d> solver(hessian, Eigen::ComputeFullU | Eigen::ComputeFullV);
-        Vec6d delta = solver.solve(-gradient);
+        delta = solver.solve(-gradient);
         if (!delta.allFinite()) break;
         if (delta.norm() < options_.epsilon) { fit.converged = true; break; }
         if (gradient.dot(delta) <= 0) {
-            if (features_.enabled && features_.exact_hessian) {
+            if (!use_constraint && features_.enabled && features_.exact_hessian) {
                 // 精确Hessian可能不定。Newton步非上升时，用同一Hessian的奇异值缩放梯度。
                 const auto rank = solver.rank();
                 Vec6d scaled = Vec6d::Zero();
@@ -356,24 +439,7 @@ NdtFit MultiLayerNdt::AlignSources(const Sources& sources, const SE3& prediction
                 delta = gradient;
             }
         }
-        if (delta.norm() > options_.max_step) delta *= options_.max_step / delta.norm();
-        bool advanced = false;
-        for (int attempt = 0; attempt < 8; ++attempt, delta *= 0.5) {
-            Vec6d trial_gradient;
-            Mat6d trial_hessian;
-            std::vector<double> trial_scores;
-            // 特征路径下一轮会重建对应和Hessian，回溯不重复计算这部分。
-            const double trial_score = EvaluateSources(sources, pose + delta, trial_gradient, trial_hessian, trial_scores, !features_.enabled, fixed);
-            if (!std::isfinite(trial_score) || trial_score < score) continue;
-            pose += delta;
-            score = trial_score; gradient = trial_gradient; hessian = trial_hessian;
-            fit.layer_scores = std::move(trial_scores);
-            ++fit.iterations;
-            advanced = true;
-            if (delta.norm() < options_.epsilon) fit.converged = true;
-            break;
-        }
-        if (!advanced || fit.converged) break;
+        if (!try_step(delta, 0.0) || fit.converged) break;
     }
     fit.pose = ToPose(pose);
     fit.score = score;

@@ -295,6 +295,38 @@ int main() {
         Require(fit.valid && fit.corner_matches > 0 && fit.surface_matches > 0 &&
             fit_error.translation().norm() < .002 && fit_error.so3().log().norm() < .0002,
             "joint geometric feature pose optimization failed");
+
+        // 单个点到水平面的平移分量有闭式解，可以辨别软约束步、纯GN步和纯Newton步。
+        CloudPtr level_plane(new PointCloudType), raised_point(new PointCloudType);
+        for (int i = -6; i <= 6; ++i) for (int j = -6; j <= 6; ++j) {
+            PointType sample;
+            sample.x = .18f * i; sample.y = .18f * j; sample.z = 0;
+            level_plane->push_back(sample);
+        }
+        auto one_step = options;
+        one_step.max_iterations = 1;
+        one_step.max_step = .5;
+        auto constrained_features = features;
+        constrained_features.exact_hessian = false;
+        constrained_features.hessian_constraint_weight = .5;
+        MultiLayerNdt constrained(one_step, constrained_features);
+        constrained.SetFeatureTarget({nullptr, level_plane});
+        PointType raised;
+        raised.x = raised.y = 0; raised.z = .18f;
+        raised_point->push_back(raised);
+        const double normalized_distance = raised.z / constrained_features.surface_distance_scale;
+        const double curvature = normalized_distance * normalized_distance - 1;
+        const double lambda = constrained_features.hessian_constraint_weight;
+        const double expected_step = -raised.z * (1 - lambda * curvature) / (1 + lambda * curvature * curvature);
+        const auto soft = constrained.AlignFeatures({nullptr, raised_point}, SE3());
+        Require(soft.iterations == 1 && std::abs(soft.pose.translation().z() - expected_step) < 1e-6,
+            "soft Hessian step does not minimize the scaled joint objective");
+        // 正曲率处的软约束候选沿下降方向，应使用同一平面的GN增量。
+        raised_point->front().z = .38f;
+        const auto fallback = constrained.AlignFeatures({nullptr, raised_point}, SE3());
+        Require(fallback.iterations == 1 && std::abs(fallback.pose.translation().z() + .38) < 1e-6,
+            "downhill soft Hessian step was not replaced by the Gauss-Newton step");
+
         const auto full_target = Clusters(0);
         MultiLayerNdt original_ndt(options); original_ndt.SetTarget(full_target);
         const double original_score = original_ndt.Evaluate(full_target, pose, gc, hc, unused);

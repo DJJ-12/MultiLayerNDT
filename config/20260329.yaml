@@ -10,7 +10,7 @@ sensor:
 
 features:
   enabled: true
-  exact_hessian: true          # true用三项精确Hessian，false用Gauss–Newton对照
+  exact_hessian: false         # false用Gauss–Newton，true用三项精确Hessian做对照
   N_SCAN: 16
   Horizon_SCAN: 2000
   edgeThreshold: 1.0
