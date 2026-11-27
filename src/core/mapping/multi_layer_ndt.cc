@@ -286,8 +286,7 @@ double MultiLayerNdt::EvaluateGeometry(const Sources& sources, const Corresponde
 double MultiLayerNdt::EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
                                     Mat6d& hessian, std::vector<double>& scores, bool full, const Correspondences* fixed) {
     if (features_.enabled) {
-        // 迭代用固定权重的Gauss–Newton曲率，对外求值仍提供精确Hessian以供核对。
-        if (fixed) return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full, true);
+        if (fixed) return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full, !features_.exact_hessian);
         return EvaluateGeometry(sources, FindCorrespondences(sources, pose), pose, gradient, hessian, scores, full, false);
     }
     gradient.setZero(); hessian.setZero(); scores.assign(layers_.size(), 0.0);
@@ -345,7 +344,18 @@ NdtFit MultiLayerNdt::AlignSources(const Sources& sources, const SE3& prediction
         Vec6d delta = solver.solve(-gradient);
         if (!delta.allFinite()) break;
         if (delta.norm() < options_.epsilon) { fit.converged = true; break; }
-        if (gradient.dot(delta) <= 0) delta = gradient;  // 非极大方向改用上升方向。
+        if (gradient.dot(delta) <= 0) {
+            if (features_.enabled && features_.exact_hessian) {
+                // 精确Hessian可能不定。Newton步非上升时，用同一Hessian的奇异值缩放梯度。
+                const auto rank = solver.rank();
+                Vec6d scaled = Vec6d::Zero();
+                scaled.head(rank) = (solver.matrixV().leftCols(rank).transpose() * gradient)
+                                        .cwiseQuotient(solver.singularValues().head(rank));
+                delta = solver.matrixV() * scaled;
+            } else {
+                delta = gradient;
+            }
+        }
         if (delta.norm() > options_.max_step) delta *= options_.max_step / delta.norm();
         bool advanced = false;
         for (int attempt = 0; attempt < 8; ++attempt, delta *= 0.5) {

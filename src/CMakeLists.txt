@@ -1,6 +1,7 @@
 add_library(multi_layer_ndt_core STATIC
   core/mapping/multi_layer_ndt.cc
   core/mapping/mapping.cc
+  core/mapping/save_map.cc
   core/mapping/feature_extraction.cc
   core/backend/pose_graph.cpp
   core/backend/loop.cpp

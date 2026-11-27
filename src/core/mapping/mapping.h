@@ -12,7 +12,8 @@ public:
     MappingResult Finish();  // 等最后一次回环完成并应用，读包结束后再保存。
     const MapData& Data() const { return data_; }
     static std::vector<NavState> CorrectedTrajectory(const MapData& data);
-    static bool SaveMap(const MapData& data, const std::string& directory, double voxel_size);
+    static bool SaveMap(const MapData& data, const std::string& directory, double voxel_size,
+                        int block_resolution = 20, double block_voxel_size = 0.1);
 
 private:
     CloudPtr Downsample(const CloudPtr& cloud, double size) const;

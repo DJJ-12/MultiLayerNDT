@@ -1,0 +1,58 @@
+# 20260329的CX16点云，16线、0.18度/列，time为帧内相对秒。
+sensor:
+  lidar_topic: "/cx/cloud"
+  min_range: 1.0
+  max_range: 100.0
+  time_field: "time"
+  time_scale: 1.0
+  time_absolute: false
+  deskew: true
+
+features:
+  enabled: true
+  exact_hessian: true          # true用三项精确Hessian，false用Gauss–Newton对照
+  N_SCAN: 16
+  Horizon_SCAN: 2000
+  edgeThreshold: 1.0
+  surfThreshold: 0.1
+  odometrySurfLeafSize: 0.4
+  neighbor_radius_factor: 2.0
+  corner_distance_scale: 0.3
+  surface_distance_scale: 0.2
+
+ndt:
+  num_layers: 3
+  resolutions: [2.0, 1.0, 0.5]
+  weights: [1.0, 1.0, 1.0]
+  source_voxel: 0.3
+  num_threads: 4
+  max_iterations: 30
+  epsilon: 0.005
+  max_step: 0.3
+
+mapping:
+  keyframe_distance: 1.0
+  keyframe_angle: 0.2
+  keyframe_time: 2.0
+  keyframe_voxel: 0.15
+  submap_radius: 50.0
+  submap_keyframes: 20
+
+loop:
+  loopClosureEnableFlag: true
+  loopClosureFrequency: 1.0
+  historyKeyframeSearchRadius: 15.0
+  historyKeyframeSearchTimeDiff: 30.0
+  historyKeyframeSearchNum: 25
+  historyKeyframeFitnessScore: 0.3
+  mappingSurfLeafSize: 0.4
+
+output:
+  with_ui: true
+  pub_tf: true
+  map_frame: "map"
+  lidar_frame: "laser_link"
+  save_path: "./maps/20260329"
+  save_voxel: 0.1
+  block_map_resolution: 20     # XY分块边长，m
+  block_map_voxel_size: 0.1    # 块内降采样边长，m；0表示沿用全图降采样结果

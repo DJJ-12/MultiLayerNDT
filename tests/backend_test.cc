@@ -2,6 +2,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <pcl/io/pcd_io.h>
 #include <iostream>
 #include <random>
@@ -54,13 +55,41 @@ int main() {
             ("ndt_backend_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         Require(Mapping::SaveMap(data, destination.string(), .1), "optimized map save failed");
         PointCloudType saved;
-        Require(pcl::io::loadPCDFile<PointType>((destination / "map.pcd").string(), saved) == 0 && saved.size() > 20,
+        Require(pcl::io::loadPCDFile<PointType>((destination / "global.pcd").string(), saved) == 0 && saved.size() > 20,
             "map export did not transform local keyframes by optimized poses");
         std::ifstream file(destination / "trajectory.txt");
         double stamp, x, y, z, qx, qy, qz, qw;
         Vec3d last_exported = Vec3d::Zero();
         while (file >> stamp >> x >> y >> z >> qx >> qy >> qz >> qw) last_exported = Vec3d(x, y, z);
         Require((last_exported - data.keyframes.back().pose.translation()).norm() < 1e-7, "saved trajectory contains pre-loop drift");
+        file.close();
+        Require(std::filesystem::file_size(destination / "pose.txt") > 0, "keyframe pose export missing");
+
+        // 重新保存同一目录，检查负坐标分块、降采样和旧索引对应的文件清理。
+        const auto block_dir = destination / "BlockMap";
+        const auto pcd_dir = block_dir / "pointcloud_map";
+        const auto old_block = pcd_dir / "seg_0_0.pcd";
+        Require(std::filesystem::exists(old_block), "initial block was not exported");
+        { std::ofstream marker(destination / "notes.txt"); marker << "keep"; }
+        CloudPtr tiles(new PointCloudType);
+        point.y = -.05f;
+        for (float px : {-.11f, -.12f, 20.f}) {
+            point.x = px;
+            tiles->push_back(point);
+        }
+        MapData replacement;
+        replacement.keyframes.push_back({0.0, SE3(), tiles, SE3()});
+        Require(Mapping::SaveMap(replacement, destination.string(), .1), "replacing a map failed");
+        std::ifstream metadata(block_dir / "pointcloud_map_metadata.yaml");
+        const std::string index((std::istreambuf_iterator<char>(metadata)), std::istreambuf_iterator<char>());
+        Require(index == "x_resolution: 20\ny_resolution: 20\nseg_-20_-20.pcd: [-20, -20]\nseg_20_-20.pcd: [20, -20]\n",
+            "block index is incompatible with lightning-lm");
+        pcl::PointCloud<pcl::PointXYZ> block;
+        Require(pcl::io::loadPCDFile((pcd_dir / "seg_-20_-20.pcd").string(), block) == 0 &&
+            block.size() == 1 && std::abs(block.front().x + .115f) < 1e-5f,
+            "block points were not downsampled in map coordinates");
+        Require(!std::filesystem::exists(old_block) && std::filesystem::exists(destination / "notes.txt"),
+            "map replacement did not clean its previous blocks or removed unrelated files");
 
         // 距离/时间候选、真实ICP验证、异步提交和末尾等待整条回环链路。
         CloudPtr scene(new PointCloudType);

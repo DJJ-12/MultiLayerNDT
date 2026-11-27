@@ -3,12 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
-#include <pcl/io/pcd_io.h>
 
 namespace lightning {
 Mapping::Mapping(MappingOptions options) : options_(std::move(options)), ndt_(options_.ndt, options_.features), backend_(options_.loop) {}
@@ -211,28 +207,4 @@ std::vector<NavState> Mapping::CorrectedTrajectory(const MapData& data) {
     return trajectory;
 }
 
-bool Mapping::SaveMap(const MapData& data, const std::string& directory, double voxel_size) {
-    if (data.keyframes.empty()) return false;
-    std::filesystem::create_directories(directory);
-    CloudPtr map(new PointCloudType), sampled(new PointCloudType);
-    for (const auto& keyframe : data.keyframes) {
-        PointCloudType world;
-        const Eigen::Matrix4f transform = keyframe.pose.matrix().cast<float>();
-        pcl::transformPointCloud(*keyframe.cloud, world, transform);
-        *map += world;
-    }
-    pcl::VoxelGrid<PointType> filter;
-    filter.setLeafSize(voxel_size, voxel_size, voxel_size);
-    filter.setInputCloud(map); filter.filter(*sampled);
-    if (pcl::io::savePCDFileBinary((std::filesystem::path(directory) / "map.pcd").string(), *sampled) != 0) return false;
-    std::ofstream trajectory(std::filesystem::path(directory) / "trajectory.txt");
-    trajectory << std::fixed << std::setprecision(9);
-    for (const auto& state : CorrectedTrajectory(data)) {
-        const auto& t = state.pose.translation();
-        const auto q = state.pose.unit_quaternion();
-        trajectory << state.timestamp_ << ' ' << t.x() << ' ' << t.y() << ' ' << t.z() << ' '
-                   << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w() << '\n';
-    }
-    return trajectory.good();
-}
 }  // namespace lightning

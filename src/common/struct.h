@@ -53,6 +53,7 @@ struct FeatureOptions {
     double neighbor_radius_factor = 2.0;
     // 几何分数exp(-距离平方/(2*h*h))的距离尺度，单位m。
     double corner_distance_scale = 0.3, surface_distance_scale = 0.2;
+    bool exact_hessian = false;  // 设为true时，用三项精确Hessian进行对照。
 };
 
 struct FeatureClouds {

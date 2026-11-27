@@ -76,7 +76,7 @@ FeatureClouds GeometryScene() {
 
 int main() {
     try {
-        FeatureOptions features; features.enabled = true;
+        FeatureOptions features; features.enabled = true; features.exact_hessian = true;
         features.odometrySurfLeafSize = .001f;  // 先核对原始分类，再单独核对按ring体素滤波。
         const auto plane = Rays(0), edge = Rays(1);
         const auto flat = ExtractFeatures(plane, plane.cloud, features);

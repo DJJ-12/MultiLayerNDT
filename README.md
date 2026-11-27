@@ -39,7 +39,13 @@ ros2 run multi_layer_ndt run_multi_layer_ndt --config /你的路径/MultiLayerND
 ros2 service call /multi_layer_ndt/save_map std_srvs/srv/Trigger "{}"
 ```
 
-保存到`--output`指定目录；未给时使用`output.save_path`。输出`map.pcd`（按图优化后的关键帧位姿叠加并降采样）和`trajectory.txt`（应用关键帧图校正后的全部处理帧，TUM格式：time x y z qx qy qz qw）。再次保存会覆盖这两个输出文件，不清空目录。
+保存到`--output`指定目录，默认使用`output.save_path`。使用与lightning-lm相同的地图目录结构。
+
+- `global.pcd` 为按图优化后的关键帧位姿叠加并按`output.save_voxel`降采样的全图，默认0.1米，采用压缩二进制PCD。
+- `BlockMap/pointcloud_map/seg_X_Y.pcd` 为按XY切分的XYZ点云，`BlockMap/pointcloud_map_metadata.yaml`记录块边长和各块的地图坐标原点。块边长`output.block_map_resolution`默认20米，块内降采样`output.block_map_voxel_size`默认0.1米，设为0时使用全图降采样后的点。负坐标按向下取整确定块原点。
+- `pose.txt` 记录图优化后的关键帧位姿，含编号、时间戳、平移和四元数。`trajectory.txt`记录应用图校正后的逐帧位姿，采用TUM格式。
+
+重复保存时更新索引并移除它原先引用但本次已无点的块文件。
 保存时只短暂复制关键帧指针/位姿快照，磁盘写入期间在线计算仍可继续。
 
 ## 联合多层目标
@@ -79,6 +85,7 @@ H * delta = -g
 ```yaml
 features:
   enabled: true
+  exact_hessian: true
   N_SCAN: 16
   Horizon_SCAN: 2000
   edgeThreshold: 1.0
@@ -93,7 +100,7 @@ features:
 
 两类点各建立独立的N层体素金字塔：corner只查询corner地图，surface只查询surface地图。特征模式的体素保存占用格内的点云质心，不要求单格至少6个点，也不使用体素高斯协方差。关闭特征开关后，全量NDT仍沿用原来的体素统计、逆协方差、评分与求导。
 
-每个源特征点在各层最多查询5个邻近质心，搜索半径为`neighbor_radius_factor * 本层体素边长`。跨层重合质心合并，至少有5个不同支持才拟合；各层总支持权重沿用`ndt.weights`，在该层找到的质心间均分。corner用加权PCA，最大特征值必须大于第二特征值的3倍；surface用加权QR求解`A*[pa,pb,pc]'=-1`，归一化包括pd，全部支持点到平面距离须不超过0.2m。拟合不成立只跳过该点。
+每个源特征点在各层最多查询5个邻近质心，统一使用`neighbor_radius_factor * 最细启用层的体素边长`作为拟合邻域半径。跨层重合质心合并，至少有5个不同支持才拟合。各层总支持权重沿用`ndt.weights`，在该层找到的质心间均分。corner用加权PCA，最大特征值必须大于第二特征值的3倍。surface以加权质心为局部原点，使用带列主元的QR拟合平面法向，支持点到平面距离须不超过0.2m。拟合不成立只跳过该点。
 
 对应成立后使用几何距离平方的负指数，h由上述两个`distance_scale`参数给出，单位m：
 
@@ -104,14 +111,20 @@ score = exp(-d²/(2*h²))
 F = 0.5 * sum(corner_score)/N_corner + 0.5 * sum(surface_score)/N_surface
 ```
 
-每个源点的跨层几何分数只计一次，分母使用固定源点数；未匹配点贡献0。单点分数为(0,1]，联合分数为[0,1]，表示匹配评分，不是定位正确概率。h越小，大残差衰减越快，但初值偏差较大时梯度也更容易接近0。
+平面偏置pd等于负的法向量与加权质心内积。每个源点的跨层几何分数只计一次，分母使用固定源点数；未匹配点贡献0。单点分数为(0,1]，联合分数为[0,1]，表示几何匹配程度。h越小，大残差衰减越快，但初值偏差较大时梯度也更容易接近0。
 
-几何投影矩阵除以h²后传入原`updateDerivatives`，该路径令`gauss_d1=-1、gauss_d2=1`，得到上式的准确梯度和Hessian；变换的一/二阶导数、SVD增量求解和上升回溯继续复用。每轮建立对应，求解和回溯固定本轮线/面及权重，接受位姿后下一轮才重新查询和拟合。
+几何投影矩阵除以h²后传入原`updateDerivatives`，该路径令`gauss_d1=-1、gauss_d2=1`。梯度与指数评分保持一致。`features.exact_hessian: true` 时使用精确Hessian的三个项求解位姿增量。Newton方向无法上升时，用同一个Hessian的奇异值缩放梯度。设为`false`时固定本轮指数权重，使用Gauss–Newton做对照。两种模式都按指数评分回溯，求解和回溯固定本轮线、面，接受位姿后下一轮重新查询和拟合。
 特征路径还把投影二次型的浮点负舍入截到0，防止精确共线时指数略大于1，被原NDT数值检查误丢弃；全量路径不启用此处理。
 
 特征只用于前端NDT匹配。关键帧保存两类局部特征供子地图构建，回环校正时按新位姿重建两类金字塔；后端回环、UI和完整PCD仍使用完整关键帧点云。
 
+特征模式使用过去三个帧间隔的平均运动来估计预测和去畸变所需的速度。历史不足时以最近位姿作为初值，帧内运动速度取零。
+
 没有有效观测时按原运动预测传播，不自动切回全量匹配。日志`源特征(C/S)`是经`ndt.source_voxel`过滤后的点数；`有效线面对应(C/S)`是通过PCA/QR并实际参与本轮评分的源点数。`各层评分`和`有效体素`先列corner的N层，再列surface的N层；特征模式的各层评分是按参与支持权重分摊的几何分数，全部相加再乘0.5等于联合评分，并非每层重复添加一次约束。
+
+### 20260329数据包
+
+`config/20260329.yaml`使用包内的`/cx/cloud`、16个ring和2000列。点内`time`为帧内相对秒。该配置显式启用精确Hessian做实验。将`features.exact_hessian`设为`false`即可对照Gauss–Newton，其余参数保持一致。
 
 ### 20261029数据包
 
@@ -158,7 +171,7 @@ ICP在独立线程运行，只接收不可变关键帧快照并提交回环约�
 ## UI与ROS输出
 
 Pangolin中红色为逐帧里程计轨迹，紫色为关键帧轨迹，灰色为当前局部子地图，扫描点按高度着色。
-UI只显示活动关键帧，避免完整历史点云一直占用渲染内存；保存的map.pcd仍包含全部关键帧。
+UI只显示活动关键帧以节省渲染内存。导出的`global.pcd`包含全部关键帧的地图点云。
 
 | Topic | 消息 | 内容 |
 |---|---|---|

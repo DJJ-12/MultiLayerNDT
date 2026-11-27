@@ -69,6 +69,7 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     options.submap_keyframes = map["submap_keyframes"].as<int>();
     if (const auto features = yaml["features"]) {
         options.features.enabled = features["enabled"].as<bool>(false);
+        options.features.exact_hessian = features["exact_hessian"].as<bool>(options.features.exact_hessian);
         options.features.N_SCAN = features["N_SCAN"].as<int>(16);
         options.features.Horizon_SCAN = features["Horizon_SCAN"].as<int>(2000);
         options.features.edgeThreshold = features["edgeThreshold"].as<float>(1.0f);
@@ -92,6 +93,8 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
     map_frame_ = output["map_frame"].as<std::string>(); lidar_frame_ = output["lidar_frame"].as<std::string>();
     save_path_ = save_path.empty() ? output["save_path"].as<std::string>() : save_path;
     save_voxel_ = output["save_voxel"].as<double>(); pub_tf_ = output["pub_tf"].as<bool>();
+    block_map_resolution_ = output["block_map_resolution"].as<int>(block_map_resolution_);
+    block_map_voxel_size_ = output["block_map_voxel_size"].as<double>(block_map_voxel_size_);
     const auto durable = rclcpp::QoS(1).reliable().transient_local();
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/multi_layer_ndt/pose", 10);
     path_pub_ = create_publisher<nav_msgs::msg::Path>("/multi_layer_ndt/path", durable);
@@ -113,8 +116,10 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
 #else
     (void)no_ui;
 #endif
-    RCLCPP_INFO(get_logger(), "点云入口=%s，输出目录=%s，每套金字塔层数=%d，模式=%s", lidar_topic_.c_str(), save_path_.c_str(),
-        options.ndt.num_layers, use_features_ ? "corner/surface" : "全量点云");
+    const char* mode = "全量点云";
+    if (use_features_) mode = options.features.exact_hessian ? "特征/精确Hessian" : "特征/Gauss-Newton";
+    RCLCPP_INFO(get_logger(), "点云入口=%s，输出目录=%s，每套金字塔层数=%d，模式=%s", lidar_topic_.c_str(),
+        save_path_.c_str(), options.ndt.num_layers, mode);
 }
 MappingNode::~MappingNode() {
 #ifdef MULTI_LAYER_NDT_WITH_UI
@@ -260,7 +265,7 @@ bool MappingNode::Save() {
     try {
         MapData snapshot;
         { std::lock_guard<std::mutex> processing(processing_mutex_); snapshot = mapping_->Data(); }
-        const bool saved = Mapping::SaveMap(snapshot, save_path_, save_voxel_);
+        const bool saved = Mapping::SaveMap(snapshot, save_path_, save_voxel_, block_map_resolution_, block_map_voxel_size_);
         if (saved) RCLCPP_INFO(get_logger(), "已保存地图与轨迹: %s", save_path_.c_str());
         return saved;
     } catch (const std::exception& error) { RCLCPP_ERROR(get_logger(), "地图保存失败: %s", error.what()); return false; }

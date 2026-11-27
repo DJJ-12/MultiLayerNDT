@@ -89,7 +89,7 @@ int main() {
         const auto destination = std::filesystem::temp_directory_path() /
             ("multi_layer_ndt_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         Require(Mapping::SaveMap(mapping.Data(), destination.string(), .05) &&
-            std::filesystem::exists(destination / "map.pcd") && std::filesystem::file_size(destination / "trajectory.txt") > 0,
+            std::filesystem::exists(destination / "global.pcd") && std::filesystem::file_size(destination / "trajectory.txt") > 0,
             "map/trajectory save failed");
         std::cout << "All layers, analytic derivatives, registration, mapping and save tests passed\n";
         return 0;
