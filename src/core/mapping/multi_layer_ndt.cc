@@ -122,7 +122,7 @@ public:
                 computePointDerivatives(point, point_gradient, point_hessian, exact_hessian);
                 const Vec3d error = transform * point - c.reference;
                 const double value = updateDerivatives(g, h, point_gradient, point_hessian, error, c.metric,
-                                                       full, true, gauss_newton, local);
+                                                       full, true, gauss_newton, local, c.weight);
                 sum += value;
                 for (std::size_t layer = 0; layer < parts.size(); ++layer) parts[layer] += c.layer_weights[layer] * value;
             }
@@ -304,6 +304,29 @@ MultiLayerNdt::Correspondences MultiLayerNdt::FindCorrespondences(const Sources&
                 c.layer_weights = layer_weights;
                 for (auto& weight : c.layer_weights) weight /= total;
             }
+        }
+    }
+
+    if (!(features_.range_weight_scale > 0.0)) return result;
+    // 远处面对应占比从18%到33%时逐步加强降权。权重随对应生成，本轮回溯共用。
+    std::size_t surface_count = 0, far_surface_count = 0;
+    for (const auto& c : result[1]) {
+        if (c.layer_weights.empty()) continue;
+        ++surface_count;
+        if (c.point.squaredNorm() >= 30.0 * 30.0) ++far_surface_count;
+    }
+    if (surface_count == 0) return result;
+    const double far_fraction = static_cast<double>(far_surface_count) / surface_count;
+    const double attenuation = std::clamp((far_fraction - 0.18) / 0.15, 0.0, 1.0);
+    if (attenuation == 0.0) return result;
+
+    const double scale = features_.range_weight_scale;
+    const double inverse_scale_squared = 1.0 / (scale * scale);
+    for (auto& group : result) {
+        for (auto& c : group) {
+            if (c.layer_weights.empty()) continue;
+            const double base_weight = 1.0 / (1.0 + c.point.squaredNorm() * inverse_scale_squared);
+            c.weight = 1.0 - attenuation * (1.0 - base_weight * base_weight);
         }
     }
     return result;

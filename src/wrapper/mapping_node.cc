@@ -80,6 +80,7 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
         options.features.neighbor_radius_factor = features["neighbor_radius_factor"].as<double>(2.0);
         options.features.corner_distance_scale = features["corner_distance_scale"].as<double>(0.3);
         options.features.surface_distance_scale = features["surface_distance_scale"].as<double>(0.2);
+        options.features.range_weight_scale = features["range_weight_scale"].as<double>(0.0);
     }
     use_features_ = options.features.enabled;
     if (const auto loop = yaml["loop"]) {

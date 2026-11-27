@@ -25,6 +25,7 @@ features:
   neighbor_radius_factor: 2.0  # 每层最多5个质心，共用半径=最细启用层的体素边长*该倍数
   corner_distance_scale: 0.3   # 点到线分数exp(-d²/(2*h²))中的h，m
   surface_distance_scale: 0.2  # 点到面分数exp(-d²/(2*h²))中的h，m
+  range_weight_scale: 22.0    # 自适应远距离降权尺度（m），0关闭
 
 ndt:
   num_layers: 3  # 使用resolutions/weights前N项；增加层数时补齐对应项

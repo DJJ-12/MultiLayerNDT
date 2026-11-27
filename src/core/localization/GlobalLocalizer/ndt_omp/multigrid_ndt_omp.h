@@ -316,13 +316,15 @@ protected:
    * \param[in] geometry 仅几何特征路径修正半正定投影的负舍入误差。
    * \param[in] gauss_newton 使用固定指数权重的Gauss–Newton近似。
    * \param[in,out] information 可选，累计同一批几何残差的J'WJ。
+   * \param[in] weight 本轮固定的对应权重，同时作用于分数和导数。
    */
   double updateDerivatives(
     Eigen::Matrix<double, 6, 1> & score_gradient, Eigen::Matrix<double, 6, 6> & hessian,
     const Eigen::Matrix<double, 4, 6> & point_gradient,
     const Eigen::Matrix<double, 24, 6> & point_hessian, const Eigen::Vector3d & x_trans,
     const Eigen::Matrix3d & c_inv, bool compute_hessian = true, bool geometry = false,
-    bool gauss_newton = false, Eigen::Matrix<double, 6, 6>* information = nullptr) const;
+    bool gauss_newton = false, Eigen::Matrix<double, 6, 6>* information = nullptr,
+    double weight = 1.0) const;
 
   /** \brief Precompute angular components of derivatives.
    * \note Equation 6.19 and 6.21 [Magnusson 2009].

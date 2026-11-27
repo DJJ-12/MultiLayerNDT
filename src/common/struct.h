@@ -56,6 +56,7 @@ struct FeatureOptions {
     bool exact_hessian = false;  // 设为true时，用三项精确Hessian进行对照。
     double hessian_constraint_weight = 0.0;  // 归一化后的Hδ+g软约束权重。
     bool use_jacobian_term = true;  // 正权重配置默认加入r+Jδ线面项。
+    double range_weight_scale = 0.0;  // 自适应远距离降权尺度，单位m，0关闭。
 
     bool UseJointSolve() const { return enabled && use_jacobian_term && hessian_constraint_weight > 0; }
 };
@@ -69,6 +70,7 @@ struct FeatureCorrespondence {
     Vec3d point = Vec3d::Zero(), reference = Vec3d::Zero();
     Mat3d metric = Mat3d::Zero();
     std::vector<double> layer_weights;  // 空表示无有效对应；否则用于分摊各层诊断分数。
+    double weight = 1.0;
 };
 
 struct NdtFit {

@@ -661,7 +661,7 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   const Eigen::Matrix<double, 4, 6> & point_gradient,
   const Eigen::Matrix<double, 24, 6> & point_hessian, const Eigen::Vector3d & x_trans,
   const Eigen::Matrix3d & c_inv, bool compute_hessian, bool geometry,
-  bool gauss_newton, Eigen::Matrix<double, 6, 6>* information) const
+  bool gauss_newton, Eigen::Matrix<double, 6, 6>* information, double weight) const
 {
   Eigen::Matrix<double, 1, 4> x_trans4(x_trans[0], x_trans[1], x_trans[2], 0.0f);
   Eigen::Matrix4d c_inv4 = Eigen::Matrix4d::Zero();
@@ -674,7 +674,8 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   if (geometry && squared_distance < 0.0) squared_distance = 0.0;
   double e_x_cov_x = exp(-gauss_d2_ * squared_distance * 0.5f);
   // Calculate probability of transformed points existence, Equation 6.9 [Magnusson 2009]
-  double score_inc = -gauss_d1_ * e_x_cov_x;
+  const double weighted_amplitude = gauss_d1_ * weight;
+  double score_inc = -weighted_amplitude * e_x_cov_x;
 
   e_x_cov_x = gauss_d2_ * e_x_cov_x;
 
@@ -682,7 +683,7 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   if (e_x_cov_x > 1 || e_x_cov_x < 0 || e_x_cov_x != e_x_cov_x) return (0);
 
   // Reusable portion of Equation 6.12 and 6.13 [Magnusson 2009]
-  e_x_cov_x *= gauss_d1_;
+  e_x_cov_x *= weighted_amplitude;
 
   Eigen::Matrix<double, 4, 6> c_inv4_x_point_gradient4 = c_inv4 * point_gradient;
   Eigen::Matrix<double, 6, 1> x_trans4_dot_c_inv4_x_point_gradient4 =
