@@ -26,7 +26,7 @@ struct Scan {
 
 // UI只需要这些状态，不引入滤波器和IMU状态模型。
 struct NavState {
-    // confidence_沿用UI接口名称，保存联合NDT评分，不表示标定后的概率。
+    // confidence_沿用UI接口名称，保存联合匹配评分，不表示标定后的概率。
     double timestamp_ = 0.0, confidence_ = 0.0;
     SE3 pose;
     Vec3d velocity = Vec3d::Zero();
@@ -49,10 +49,21 @@ struct FeatureOptions {
     int N_SCAN = 16, Horizon_SCAN = 2000;
     // 原LIO-SAM曲率阈值，单位m²；不沿用归一化高/低通阈值。
     float edgeThreshold = 1.0f, surfThreshold = 0.1f, odometrySurfLeafSize = 0.4f;
+    // 每层最多取5个质心，搜索半径为本层体素边长的该倍数。
+    double neighbor_radius_factor = 2.0;
+    // 几何分数exp(-距离平方/(2*h*h))的距离尺度，单位m。
+    double corner_distance_scale = 0.3, surface_distance_scale = 0.2;
 };
 
 struct FeatureClouds {
     CloudPtr corner, surface;  // 关闭特征点时保持空指针，不分配两类点云。
+};
+
+// 一轮优化中固定的线/面对应；metric为几何投影矩阵除以距离尺度平方。
+struct FeatureCorrespondence {
+    Vec3d point = Vec3d::Zero(), reference = Vec3d::Zero();
+    Mat3d metric = Mat3d::Zero();
+    std::vector<double> layer_weights;  // 空表示无有效对应；否则用于分摊各层诊断分数。
 };
 
 struct NdtFit {
@@ -60,6 +71,7 @@ struct NdtFit {
     bool valid = false, converged = false;
     int iterations = 0;
     double score = 0.0;
+    std::size_t corner_matches = 0, surface_matches = 0;
     std::vector<double> layer_scores;
 };
 
@@ -103,6 +115,7 @@ struct MappingResult {
     bool graph_updated = false;
     std::size_t keyframe_count = 0, loop_count = 0;
     std::size_t corner_count = 0, surface_count = 0;
+    std::size_t corner_matches = 0, surface_matches = 0;
     int iterations = 0;
     std::vector<double> layer_scores;
     std::vector<std::size_t> layer_voxels;

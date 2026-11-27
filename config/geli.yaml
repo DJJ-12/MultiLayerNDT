@@ -18,6 +18,9 @@ features:
   edgeThreshold: 1.0           # 原LIO-SAM角点曲率阈值，m²
   surfThreshold: 0.1           # 原LIO-SAM平坦点标记阈值，m²
   odometrySurfLeafSize: 0.4     # 按ring收集非corner点后的体素滤波边长，m
+  neighbor_radius_factor: 2.0  # 每层最多5个质心，搜索半径=本层体素边长*该倍数
+  corner_distance_scale: 0.3   # 点到线分数exp(-d²/(2*h²))中的h，m
+  surface_distance_scale: 0.2  # 点到面分数exp(-d²/(2*h²))中的h，m
 
 ndt:
   num_layers: 3  # 使用resolutions/weights前N项；增加层数时补齐对应项

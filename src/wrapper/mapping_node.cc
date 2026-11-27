@@ -74,6 +74,9 @@ MappingNode::MappingNode(const std::string& yaml_path, const std::string& save_p
         options.features.edgeThreshold = features["edgeThreshold"].as<float>(1.0f);
         options.features.surfThreshold = features["surfThreshold"].as<float>(0.1f);
         options.features.odometrySurfLeafSize = features["odometrySurfLeafSize"].as<float>(0.4f);
+        options.features.neighbor_radius_factor = features["neighbor_radius_factor"].as<double>(2.0);
+        options.features.corner_distance_scale = features["corner_distance_scale"].as<double>(0.3);
+        options.features.surface_distance_scale = features["surface_distance_scale"].as<double>(0.2);
     }
     use_features_ = options.features.enabled;
     if (const auto loop = yaml["loop"]) {
@@ -189,9 +192,10 @@ void MappingNode::ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& c
             std::ostringstream scores; for (double score : result.layer_scores) scores << score << ' ';
             std::ostringstream voxels; for (auto count : result.layer_voxels) voxels << count << ' ';
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-            RCLCPP_INFO(get_logger(), "[联合NDT] 模式=%s 帧=%zu 关键帧=%zu 回环=%zu 迭代=%d 收敛=%d 源特征(C/S)=%zu/%zu 各层评分=[%s] 有效体素=[%s] 总耗时=%.2fms",
-                use_features_ ? "corner/surface" : "full", frames_, result.keyframe_count, result.loop_count, result.iterations,
-                int(result.converged), result.corner_count, result.surface_count, scores.str().c_str(), voxels.str().c_str(), ms);
+            RCLCPP_INFO(get_logger(), "[联合NDT] 模式=%s 帧=%zu 关键帧=%zu 回环=%zu 迭代=%d 收敛=%d 源特征(C/S)=%zu/%zu 有效线面对应(C/S)=%zu/%zu 各层评分=[%s] 有效体素=[%s] 总耗时=%.2fms",
+                use_features_ ? "PCA/QR几何指数" : "full", frames_, result.keyframe_count, result.loop_count, result.iterations,
+                int(result.converged), result.corner_count, result.surface_count, result.corner_matches, result.surface_matches,
+                scores.str().c_str(), voxels.str().c_str(), ms);
         }
     } catch (const std::exception& error) { RCLCPP_ERROR(get_logger(), "点云处理失败: %s", error.what()); }
 }

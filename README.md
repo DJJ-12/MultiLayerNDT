@@ -46,7 +46,7 @@ ros2 service call /multi_layer_ndt/save_map std_srvs/srv/Trigger "{}"
 
 `ndt.num_layers`人工指定每套体素金字塔的层数，使用`resolutions`和`weights`的前N项；增加层数时需要补齐两份列表。默认N=3，对应2.0、1.0、0.5m，保持原全量模式配置。
 
-每轮所有有效层在同一个位姿下求值，累加同一套权重的score、gradient和Hessian，再求解一个六维增量。
+全量模式每轮所有有效层在同一个位姿下求值，累加同一套权重的score、gradient和Hessian，再求解一个六维增量。
 没有“粗层align完成后再跑细层”，没有把多个独立位姿作平均。每层复用`MultiGridNormalDistributionsTransform::computeDerivatives`。
 
 各层score先除以固定源点数N及本层高斯幅值`A=-gauss_d1`，权重归一化到和为1：
@@ -84,15 +84,34 @@ features:
   edgeThreshold: 1.0
   surfThreshold: 0.1
   odometrySurfLeafSize: 0.4
+  neighbor_radius_factor: 2.0
+  corner_distance_scale: 0.3
+  surface_distance_scale: 0.2
 ```
 
 曲率阈值单位为m²，不再读取上一版归一化高/低通的窗口及阈值。`edgeThreshold`降低可增加corner候选，`surfThreshold`控制平坦种子标记；`odometrySurfLeafSize`控制按ring输出的surface密度。`N_SCAN`和`Horizon_SCAN`沿用各原始配置的扫描参数，专用配置按实包填写。
 
-两类点各建立独立的N层体素金字塔：corner只查询corner地图，surface只查询surface地图。两类各占一半权重，并分别按本类源点数归一化；各层仍使用`ndt.weights`。每轮所有类别、所有层在同一个位姿计算评分、梯度和Hessian，累加后求解一次增量。
+两类点各建立独立的N层体素金字塔：corner只查询corner地图，surface只查询surface地图。特征模式的体素保存占用格内的点云质心，不要求单格至少6个点，也不使用体素高斯协方差。关闭特征开关后，全量NDT仍沿用原来的体素统计、逆协方差、评分与求导。
+
+每个源特征点在各层最多查询5个邻近质心，搜索半径为`neighbor_radius_factor * 本层体素边长`。跨层重合质心合并，至少有5个不同支持才拟合；各层总支持权重沿用`ndt.weights`，在该层找到的质心间均分。corner用加权PCA，最大特征值必须大于第二特征值的3倍；surface用加权QR求解`A*[pa,pb,pc]'=-1`，归一化包括pd，全部支持点到平面距离须不超过0.2m。拟合不成立只跳过该点。
+
+对应成立后使用几何距离平方的负指数，h由上述两个`distance_scale`参数给出，单位m：
+
+```text
+corner:  d² = (T*p-center)' * (I-v*v') * (T*p-center)
+surface: d² = (n'*T*p+pd)²
+score = exp(-d²/(2*h²))
+F = 0.5 * sum(corner_score)/N_corner + 0.5 * sum(surface_score)/N_surface
+```
+
+每个源点的跨层几何分数只计一次，分母使用固定源点数；未匹配点贡献0。单点分数为(0,1]，联合分数为[0,1]，表示匹配评分，不是定位正确概率。h越小，大残差衰减越快，但初值偏差较大时梯度也更容易接近0。
+
+几何投影矩阵除以h²后传入原`updateDerivatives`，该路径令`gauss_d1=-1、gauss_d2=1`，得到上式的准确梯度和Hessian；变换的一/二阶导数、SVD增量求解和上升回溯继续复用。每轮建立对应，求解和回溯固定本轮线/面及权重，接受位姿后下一轮才重新查询和拟合。
+特征路径还把投影二次型的浮点负舍入截到0，防止精确共线时指数略大于1，被原NDT数值检查误丢弃；全量路径不启用此处理。
 
 特征只用于前端NDT匹配。关键帧保存两类局部特征供子地图构建，回环校正时按新位姿重建两类金字塔；后端回环、UI和完整PCD仍使用完整关键帧点云。
 
-原NDT体素至少需要6个支持点，稀疏corner层可能暂时没有有效体素，该层评分为0，仍可由其他有效层/类别提供修正。没有有效观测时按原运动预测传播，不自动切回全量匹配。日志`源特征(C/S)`是经`ndt.source_voxel`过滤后实际参与匹配的点数，可能少于提取阶段数量；`各层评分`和`有效体素`先列corner的N层，再列surface的N层。
+没有有效观测时按原运动预测传播，不自动切回全量匹配。日志`源特征(C/S)`是经`ndt.source_voxel`过滤后的点数；`有效线面对应(C/S)`是通过PCA/QR并实际参与本轮评分的源点数。`各层评分`和`有效体素`先列corner的N层，再列surface的N层；特征模式的各层评分是按参与支持权重分摊的几何分数，全部相加再乘0.5等于联合评分，并非每层重复添加一次约束。
 
 ### 20261029数据包
 
@@ -103,6 +122,7 @@ ros2 run multi_layer_ndt run_multi_layer_ndt --config "$(ros2 pkg prefix multi_l
 ```
 
 抽帧已运行新提取代码，分别得到723、861、1061、900、1036个corner。该检查与本地回归测试的PCL体素过滤使用替身，不等于完整ROS2/PCL回放；整包地图质量与真实耗时尚未验证。
+上述5帧还各抽取约100个corner和100个surface检查跨层几何对应，均得到有效的PCA线与QR面约束。回归覆盖轴对齐及倾斜线/面的解析导数、负指数闭式分数、自由方向、已知位姿恢复、稀疏体素、跨层去重、并行计算及开关关闭后的原NDT路径。
 
 ## 位姿图后端与回环
 

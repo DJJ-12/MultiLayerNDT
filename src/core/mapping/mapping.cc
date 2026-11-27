@@ -11,7 +11,7 @@
 #include <pcl/io/pcd_io.h>
 
 namespace lightning {
-Mapping::Mapping(MappingOptions options) : options_(std::move(options)), ndt_(options_.ndt), backend_(options_.loop) {}
+Mapping::Mapping(MappingOptions options) : options_(std::move(options)), ndt_(options_.ndt, options_.features), backend_(options_.loop) {}
 
 CloudPtr Mapping::Downsample(const CloudPtr& cloud, double size) const {
     CloudPtr sampled(new PointCloudType);
@@ -132,6 +132,8 @@ MappingResult Mapping::Process(const Scan& scan) {
     result.state.pose = fit.valid ? fit.pose : result.prediction;
     result.state.confidence_ = fit.score;
     result.iterations = fit.iterations;
+    result.corner_matches = fit.corner_matches;
+    result.surface_matches = fit.surface_matches;
     result.layer_scores = std::move(fit.layer_scores);
     NavState odometry = result.state;
     odometry.pose = map_from_odom_.inverse() * result.state.pose;

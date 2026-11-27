@@ -6,10 +6,10 @@
 
 namespace lightning {
 
-// 各层共用一个位姿；复用原NDT的体素构建、对应查询和一/二阶导数。
+// 各层共用一个位姿；全量模式使用NDT，特征模式使用跨层线/面几何指数评分。
 class MultiLayerNdt {
 public:
-    explicit MultiLayerNdt(NdtOptions options);
+    explicit MultiLayerNdt(NdtOptions options, FeatureOptions features = {});
     ~MultiLayerNdt();
     void SetTarget(const CloudPtr& target);
     void SetFeatureTarget(const FeatureClouds& target);
@@ -28,11 +28,18 @@ public:
 private:
     class Layer;
     using Sources = std::array<CloudPtr, 2>;
+    using Correspondences = std::array<std::vector<FeatureCorrespondence>, 2>;
     void AppendLayers(const CloudPtr& target, int group, double group_weight);
+    Correspondences FindCorrespondences(const Sources& sources, const Vec6d& pose) const;
+    double EvaluateGeometry(const Sources& sources, const Correspondences& correspondences,
+                            const Vec6d& pose, Vec6d& gradient, Mat6d& hessian,
+                            std::vector<double>& scores, bool compute_hessian);
     double EvaluateSources(const Sources& sources, const Vec6d& pose, Vec6d& gradient,
-                           Mat6d& hessian, std::vector<double>& scores, bool compute_hessian = true);
+                           Mat6d& hessian, std::vector<double>& scores, bool compute_hessian = true,
+                           const Correspondences* fixed = nullptr);
     NdtFit AlignSources(const Sources& sources, const SE3& prediction);
     NdtOptions options_;
+    FeatureOptions features_;
     std::vector<std::unique_ptr<Layer>> layers_;
 };
 }  // namespace lightning

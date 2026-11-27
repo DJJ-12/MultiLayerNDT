@@ -56,6 +56,24 @@ CloudPtr Clusters(double offset) {
     return cloud;
 }
 
+FeatureClouds GeometryScene() {
+    FeatureClouds clouds{CloudPtr(new PointCloudType), CloudPtr(new PointCloudType)};
+    auto add = [](const CloudPtr& cloud, const Vec3d& v) {
+        PointType p; p.x = v.x(); p.y = v.y(); p.z = v.z(); cloud->push_back(p);
+    };
+    for (int i = -16; i <= 16; ++i) {
+        add(clouds.corner, Vec3d(.13 + .19 * i, 2.17, 3.13));
+        add(clouds.corner, Vec3d(12.17, .13 + .19 * i, 5.27));
+        add(clouds.corner, Vec3d(-12.27, 4.13, .17 + .19 * i));
+    }
+    for (int i = -5; i <= 5; ++i) for (int j = -5; j <= 5; ++j) {
+        add(clouds.surface, Vec3d(25.13 + .22 * i, .17 + .22 * j, 4.13));
+        add(clouds.surface, Vec3d(-25.13, .19 + .22 * i, 4.17 + .22 * j));
+        add(clouds.surface, Vec3d(.21 + .22 * i, 25.23, 3.17 + .22 * j));
+    }
+    return clouds;
+}
+
 int main() {
     try {
         FeatureOptions features; features.enabled = true;
@@ -144,51 +162,144 @@ int main() {
         for (int id : limited_ids) { Require(id - previous > 5, "corner neighborhood suppression missing"); previous = id; }
 
         NdtOptions options; options.num_layers = 2; options.num_threads = 1;
-        options.resolutions = {1.6, .8, .4}; options.weights = {1, 2, 3};
-        FeatureClouds target{Clusters(0), Clusters(25)};
-        MultiLayerNdt joint(options); joint.SetFeatureTarget(target);
-        MultiLayerNdt corner(options), surface(options); corner.SetTarget(target.corner); surface.SetTarget(target.surface);
-        Vec6d pose; pose << .01, -.01, .005, .0003, -.0002, .0004;
+        options.resolutions = {.8, .4, .2}; options.weights = {1, 2, 3}; options.epsilon = 1e-6;
+        const auto target = GeometryScene();
+        MultiLayerNdt joint(options, features); joint.SetFeatureTarget(target);
+        MultiLayerNdt corner(options, features), surface(options, features);
+        corner.SetFeatureTarget({target.corner, nullptr}); surface.SetFeatureTarget({nullptr, target.surface});
+        Vec6d pose; pose << .01, -.01, .005, .003, -.002, .004;
         Vec6d g, gc, gs; Mat6d h, hc, hs; std::vector<double> scores, unused;
         const double value = joint.EvaluateFeatures(target, pose, g, h, scores);
-        const double c = corner.Evaluate(target.corner, pose, gc, hc, unused);
-        const double s = surface.Evaluate(target.surface, pose, gs, hs, unused);
+        const double c = corner.EvaluateFeatures({target.corner, nullptr}, pose, gc, hc, unused);
+        const double s = surface.EvaluateFeatures({nullptr, target.surface}, pose, gs, hs, unused);
         Require(scores.size() == 4 && joint.VoxelCounts().size() == 4, "feature mode does not have two independent pyramids");
-        Require(std::abs(value - .5 * (c + s)) < 1e-10 && (g - .5 * (gc + gs)).norm() < 1e-8 &&
-            (h - .5 * (hc + hs)).norm() < 1e-7, "feature score/gradient/Hessian not jointly weighted");
-        for (auto count : joint.VoxelCounts()) Require(count > 0, "feature Gaussian pyramid is empty");
+        Require(value > 0 && value <= 1 && std::abs(value - c - s) < 1e-10 && (g - gc - gs).norm() < 1e-8 &&
+            (h - hc - hs).norm() < 1e-7, "geometric feature score/gradient/Hessian not jointly weighted");
+        Require(std::abs(.5 * std::accumulate(scores.begin(), scores.end(), 0.0) - value) < 1e-10,
+            "cross-layer geometric score was counted more than once");
+        for (auto count : joint.VoxelCounts()) Require(count > 0, "occupied feature pyramid is empty");
         FeatureClouds swapped{target.surface, target.corner};
         Require(joint.EvaluateFeatures(swapped, Vec6d::Zero(), gc, hc, unused) == 0.0,
             "corner and surface can match the wrong target category");
         FeatureClouds surface_only{CloudPtr(new PointCloudType), target.surface};
-        Require(std::abs(joint.EvaluateFeatures(surface_only, pose, gc, hc, unused) - .5 * s) < 1e-10,
+        Require(std::abs(joint.EvaluateFeatures(surface_only, pose, gc, hc, unused) - s) < 1e-10,
             "missing corner points blocked valid surface observations");
         for (int axis = 0; axis < 6; ++axis) {
             Vec6d plus = pose, minus = pose, gp, gm; Mat6d hp, hm;
-            const double step = 2e-4; plus(axis) += step; minus(axis) -= step;
+            const double step = 1e-5; plus(axis) += step; minus(axis) -= step;
             const double fp = joint.EvaluateFeatures(target, plus, gp, hp, unused);
             const double fm = joint.EvaluateFeatures(target, minus, gm, hm, unused);
-            Require(std::abs((fp - fm) / (2 * step) - g(axis)) < .03 * (1 + std::abs(g(axis))), "feature gradient finite difference");
-            Require(((gp - gm) / (2 * step) - h.col(axis)).norm() < .03 * (1 + h.col(axis).norm()), "feature Hessian finite difference");
+            Require(std::abs((fp - fm) / (2 * step) - g(axis)) < 1e-4 * (1 + std::abs(g(axis))), "geometric feature gradient finite difference");
+            Require(((gp - gm) / (2 * step) - h.col(axis)).norm() < 1e-4 * (1 + h.col(axis).norm()), "geometric feature Hessian finite difference");
         }
-        const SE3 truth = MultiLayerNdt::ToPose((Vec6d() << .04, -.025, .015, .0004, -.0003, .0006).finished());
+        auto parallel_options = options; parallel_options.num_threads = 4;
+        MultiLayerNdt parallel(parallel_options, features); parallel.SetFeatureTarget(target);
+        parallel.EvaluateFeatures(target, pose, gc, hc, unused);
+        Require((gc - g).norm() < 1e-8 && (hc - h).norm() < 1e-6, "parallel geometry derivatives differ from serial");
+
+        // 倾斜线/面覆盖非对角投影矩阵；仅轴对齐场景不能充分检验求导链。
+        FeatureClouds tilted{CloudPtr(new PointCloudType), CloudPtr(new PointCloudType)};
+        const Eigen::Matrix4f tilt = MultiLayerNdt::ToPose((Vec6d() << .3, -.4, .8, .27, -.31, .23).finished()).matrix().cast<float>();
+        pcl::transformPointCloud(*target.corner, *tilted.corner, tilt);
+        pcl::transformPointCloud(*target.surface, *tilted.surface, tilt);
+        MultiLayerNdt oblique(options, features); oblique.SetFeatureTarget(tilted);
+        const double oblique_score = oblique.EvaluateFeatures(tilted, pose, g, h, unused);
+        const double score_only = oblique.EvaluateFeatures(tilted, pose, gc, hc, unused, false);
+        Require(std::abs(score_only - oblique_score) < 1e-12 && (gc - g).norm() < 1e-10 && hc.norm() == 0,
+            "score/gradient changed when Hessian calculation was disabled");
+        for (int axis = 0; axis < 6; ++axis) {
+            Vec6d plus = pose, minus = pose, gp, gm; Mat6d hp, hm;
+            const double step = 1e-5; plus(axis) += step; minus(axis) -= step;
+            const double fp = oblique.EvaluateFeatures(tilted, plus, gp, hp, unused);
+            const double fm = oblique.EvaluateFeatures(tilted, minus, gm, hm, unused);
+            Require(std::abs((fp - fm) / (2 * step) - g(axis)) < 1e-3 * (1 + std::abs(g(axis))), "oblique feature gradient finite difference");
+            Require(((gp - gm) / (2 * step) - h.col(axis)).norm() < 1e-3 * (1 + h.col(axis).norm()), "oblique feature Hessian finite difference");
+        }
+
+        // 闭式分数检验投影、距离尺度、QR的pd和线/面的自由方向。
+        CloudPtr line(new PointCloudType), plane_map(new PointCloudType), query(new PointCloudType);
+        for (std::size_t i = 0; i < target.corner->size(); i += 3) line->push_back(target.corner->points[i]);
+        for (std::size_t i = 0; i < target.surface->size(); i += 3) plane_map->push_back(target.surface->points[i]);
+        PointType p = line->points[line->size() / 2]; p.y += .1f; p.z -= .08f; query->push_back(p);
+        MultiLayerNdt single_line(options, features); single_line.SetFeatureTarget({line, nullptr});
+        const double dy = p.y - line->points.front().y, dz = p.z - line->points.front().z;
+        const double line_value = single_line.EvaluateFeatures({query, nullptr}, Vec6d::Zero(), gc, hc, unused);
+        Require(std::abs(line_value - .5 * std::exp(-(dy * dy + dz * dz) / (2 * .3 * .3))) < 1e-8 && std::abs(gc(0)) < 1e-10,
+            "corner score is not point-to-line squared negative exponential");
+        Vec6d tangent = Vec6d::Zero(); tangent(0) = .12;
+        Require(std::abs(single_line.EvaluateFeatures({query, nullptr}, tangent, gc, hc, unused) - line_value) < 1e-8,
+            "line tangent direction was incorrectly constrained");
+        auto wider = features; wider.corner_distance_scale = .6;
+        MultiLayerNdt broad(options, wider); broad.SetFeatureTarget({line, nullptr});
+        Require(broad.EvaluateFeatures({query, nullptr}, Vec6d::Zero(), gc, hc, unused) > line_value, "corner distance scale not applied");
+        query->clear(); p = plane_map->points[plane_map->size() / 2]; p.z += .12f; query->push_back(p);
+        MultiLayerNdt single_plane(options, features); single_plane.SetFeatureTarget({nullptr, plane_map});
+        const double distance = p.z - plane_map->points.front().z;
+        const double plane_value = single_plane.EvaluateFeatures({nullptr, query}, Vec6d::Zero(), gc, hc, unused);
+        // 体素质心以float保存，累加舍入可使拟合平面产生微米级偏差。
+        Require(std::abs(plane_value - .5 * std::exp(-distance * distance / (2 * .2 * .2))) < 1e-6 &&
+            std::abs(gc(0)) < 1e-5 && std::abs(gc(1)) < 1e-5, "QR plane offset or projected plane distance incorrect");
+        tangent(0) = .07; tangent(1) = -.08;
+        Require(std::abs(single_plane.EvaluateFeatures({nullptr, query}, tangent, gc, hc, unused) - plane_value) < 1e-6,
+            "plane tangent directions were incorrectly constrained");
+        wider = features; wider.surface_distance_scale = .4;
+        MultiLayerNdt broad_plane(options, wider); broad_plane.SetFeatureTarget({nullptr, plane_map});
+        Require(broad_plane.EvaluateFeatures({nullptr, query}, Vec6d::Zero(), gc, hc, unused) > plane_value, "surface distance scale not applied");
+        auto small = options; small.resolutions = {.04, .02, .01}; small.num_layers = 3;
+        CloudPtr few(new PointCloudType);
+        for (int i = 0; i < 3; ++i) few->push_back(line->points[i]);
+        MultiLayerNdt insufficient(small, features); insufficient.SetFeatureTarget({few, nullptr});
+        Require(insufficient.EvaluateFeatures({few, nullptr}, Vec6d::Zero(), gc, hc, unused) == 0,
+            "duplicate cross-layer centers manufactured sufficient support");
+        MultiLayerNdt sparse(small, features); sparse.SetFeatureTarget({line, nullptr});
+        for (auto count : sparse.VoxelCounts()) if (count) Require(count == line->size(), "sparse occupied feature voxels were discarded");
+        MultiLayerNdt gaussian(small); gaussian.SetTarget(line);
+        for (auto count : gaussian.VoxelCounts()) Require(count == 0, "full NDT no longer applies original six-point voxel requirement");
+        // 精确共线的斜线：投影矩阵的舍入误差不能让接近零的距离变成零分。
+        CloudPtr exact_line(new PointCloudType), exact_query(new PointCloudType);
+        for (int i = -8; i <= 8; ++i) {
+            const float t = .25f * i;
+            PointType q; q.x = t; q.y = 2 * t + 1; q.z = 3 * t + 2; exact_line->push_back(q);
+            q.x = t + .125f; q.y = 2 * q.x + 1; q.z = 3 * q.x + 2; exact_query->push_back(q);
+        }
+        auto wide_search = features; wide_search.neighbor_radius_factor = 1000;
+        MultiLayerNdt exact(small, wide_search); exact.SetFeatureTarget({exact_line, nullptr});
+        Require(std::abs(exact.EvaluateFeatures({exact_query, nullptr}, Vec6d::Zero(), gc, hc, unused) - .5) < 1e-8,
+            "near-zero oblique line residual was discarded by exponential roundoff");
+        CloudPtr cube(new PointCloudType);
+        for (int i = 0; i < 8; ++i) {
+            PointType q; q.x = 2.13f + (i & 1 ? .5f : -.5f); q.y = .17f + (i & 2 ? .5f : -.5f);
+            q.z = 3.19f + (i & 4 ? .5f : -.5f); cube->push_back(q);
+        }
+        query->clear(); p.x = 2.14f; p.y = .18f; p.z = 3.2f; query->push_back(p);
+        MultiLayerNdt invalid_geometry(options, features); invalid_geometry.SetFeatureTarget({cube, cube});
+        Require(invalid_geometry.EvaluateFeatures({query, nullptr}, Vec6d::Zero(), gc, hc, unused) == 0,
+            "PCA accepted non-linear corner neighborhood");
+        Require(invalid_geometry.EvaluateFeatures({nullptr, query}, Vec6d::Zero(), gc, hc, unused) == 0,
+            "QR accepted support farther than 0.2m from fitted plane");
+
+        const SE3 truth = MultiLayerNdt::ToPose((Vec6d() << .04, -.025, .015, .004, -.003, .006).finished());
         FeatureClouds source{CloudPtr(new PointCloudType), CloudPtr(new PointCloudType)};
         const Eigen::Matrix4f inverse = truth.inverse().matrix().cast<float>();
         pcl::transformPointCloud(*target.corner, *source.corner, inverse);
         pcl::transformPointCloud(*target.surface, *source.surface, inverse);
         const auto fit = joint.AlignFeatures(source, SE3());
-        Require(fit.valid && (truth.inverse() * fit.pose).translation().norm() < .02 &&
-            (truth.inverse() * fit.pose).so3().log().norm() < .003, "joint feature pose optimization failed");
+        Require(fit.valid && fit.corner_matches > 0 && fit.surface_matches > 0 &&
+            (truth.inverse() * fit.pose).translation().norm() < .002 &&
+            (truth.inverse() * fit.pose).so3().log().norm() < .0002, "joint geometric feature pose optimization failed");
+        const auto full_target = Clusters(0);
+        MultiLayerNdt original_ndt(options); original_ndt.SetTarget(full_target);
+        const double original_score = original_ndt.Evaluate(full_target, pose, gc, hc, unused);
         double expected = 0;
         for (int layer = 0; layer < 2; ++layer) {
             auto single = options; single.num_layers = 1;
             single.resolutions = {options.resolutions[layer]}; single.weights = {1};
-            MultiLayerNdt one(single); one.SetTarget(target.corner);
-            expected += options.weights[layer] / 3.0 * one.Evaluate(target.corner, pose, gc, hc, unused);
+            MultiLayerNdt one(single); one.SetTarget(full_target);
+            expected += options.weights[layer] / 3.0 * one.Evaluate(full_target, pose, gc, hc, unused);
         }
-        Require(std::abs(c - expected) < 1e-10, "num_layers does not select and normalize the first N levels");
-        joint.SetTarget(target.corner);
-        Require(joint.VoxelCounts().size() == 2 && std::abs(joint.Evaluate(target.corner, pose, gc, hc, unused) - c) < 1e-10,
+        Require(std::abs(original_score - expected) < 1e-10, "num_layers does not select and normalize the first N levels");
+        joint.SetTarget(full_target);
+        Require(joint.VoxelCounts().size() == 2 && std::abs(joint.Evaluate(full_target, pose, gc, hc, unused) - original_score) < 1e-10,
             "full-cloud mode retained feature pyramids or weights");
 
         MappingOptions mapping_options; mapping_options.loop.loopClosureEnableFlag = false;

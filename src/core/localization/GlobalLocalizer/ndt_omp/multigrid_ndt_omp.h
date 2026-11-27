@@ -313,12 +313,13 @@ protected:
    * vector \param[in] x_trans transformed point minus mean of occupied covariance voxel \param[in]
    * c_inv covariance of occupied covariance voxel \param[in] compute_hessian flag to calculate
    * hessian, unnecessary for step calculation.
+   * \param[in] geometry 仅几何特征路径修正半正定投影的负舍入误差。
    */
   double updateDerivatives(
     Eigen::Matrix<double, 6, 1> & score_gradient, Eigen::Matrix<double, 6, 6> & hessian,
     const Eigen::Matrix<double, 4, 6> & point_gradient,
     const Eigen::Matrix<double, 24, 6> & point_hessian, const Eigen::Vector3d & x_trans,
-    const Eigen::Matrix3d & c_inv, bool compute_hessian = true) const;
+    const Eigen::Matrix3d & c_inv, bool compute_hessian = true, bool geometry = false) const;
 
   /** \brief Precompute angular components of derivatives.
    * \note Equation 6.19 and 6.21 [Magnusson 2009].

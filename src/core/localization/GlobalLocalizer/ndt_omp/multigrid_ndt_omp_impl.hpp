@@ -660,7 +660,7 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   Eigen::Matrix<double, 6, 1> & score_gradient, Eigen::Matrix<double, 6, 6> & hessian,
   const Eigen::Matrix<double, 4, 6> & point_gradient,
   const Eigen::Matrix<double, 24, 6> & point_hessian, const Eigen::Vector3d & x_trans,
-  const Eigen::Matrix3d & c_inv, bool compute_hessian) const
+  const Eigen::Matrix3d & c_inv, bool compute_hessian, bool geometry) const
 {
   Eigen::Matrix<double, 1, 4> x_trans4(x_trans[0], x_trans[1], x_trans[2], 0.0f);
   Eigen::Matrix4d c_inv4 = Eigen::Matrix4d::Zero();
@@ -668,7 +668,10 @@ double MultiGridNormalDistributionsTransform<PointSource, PointTarget>::updateDe
   c_inv4.topLeftCorner(3, 3) = c_inv;
 
   // e^(-d_2/2 * (x_k - mu_k)^T Sigma_k^-1 (x_k - mu_k)) Equation 6.9 [Magnusson 2009]
-  double e_x_cov_x = exp(-gauss_d2_ * x_trans4.dot(x_trans4 * c_inv4) * 0.5f);
+  double squared_distance = x_trans4.dot(x_trans4 * c_inv4);
+  // 线/面投影是半正定矩阵，零残差附近的舍入可能产生极小负数；仅特征路径修正。
+  if (geometry && squared_distance < 0.0) squared_distance = 0.0;
+  double e_x_cov_x = exp(-gauss_d2_ * squared_distance * 0.5f);
   // Calculate probability of transformed points existence, Equation 6.9 [Magnusson 2009]
   double score_inc = -gauss_d1_ * e_x_cov_x;
 
