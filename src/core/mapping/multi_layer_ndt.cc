@@ -337,8 +337,12 @@ double MultiLayerNdt::EvaluateSources(const Sources& sources, const Vec6d& pose,
                                     const Correspondences* fixed, Mat6d* information) {
     if (features_.enabled) {
         if (fixed) {
-            const bool gauss_newton = !features_.exact_hessian && !information;
-            return EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full, gauss_newton, information);
+            const bool gauss_newton = !features_.exact_hessian;
+            const double score = EvaluateGeometry(sources, *fixed, pose, gradient, hessian, scores, full,
+                                                  gauss_newton, gauss_newton ? nullptr : information);
+            // Gauss–Newton的H就是-J'WJ，可以直接作为联合求解的线面信息来源。
+            if (information && gauss_newton) *information = -hessian;
+            return score;
         }
         return EvaluateGeometry(sources, FindCorrespondences(sources, pose), pose, gradient, hessian, scores, full, false);
     }
@@ -382,7 +386,7 @@ NdtFit MultiLayerNdt::AlignSources(const Sources& sources, const SE3& prediction
     Correspondences correspondences;
     if (features_.enabled) correspondences = FindCorrespondences(sources, pose);
     const Correspondences* fixed = features_.enabled ? &correspondences : nullptr;
-    const bool use_constraint = fixed && features_.hessian_constraint_weight > 0;
+    const bool use_constraint = features_.UseJointSolve();
     Mat6d* const weighted_information = use_constraint ? &information : nullptr;
     double score = EvaluateSources(sources, pose, gradient, hessian, fit.layer_scores, true, fixed, weighted_information);
     if (!(score > 0) || !std::isfinite(score)) return fit;

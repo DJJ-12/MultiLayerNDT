@@ -14,8 +14,9 @@ sensor:
 # LIO-SAM特征提取；false保留全量点云链路。
 features:
   enabled: true
-  exact_hessian: false        # false用Gauss–Newton，true用三项精确Hessian做对照
-  hessian_constraint_weight: 0.1  # 软约束试验权重。设为0回到上面的求解模式
+  exact_hessian: false        # false用Gauss–Newton，true用三项精确Hessian
+  use_jacobian_term: true      # 控制是否把r+Jδ线面项加入联合求解
+  hessian_constraint_weight: 0.1  # 联合求解时Hδ+g的软约束权重
   N_SCAN: 16                  # ring行数
   Horizon_SCAN: 2000           # 水平一圈的投影列数，按实际雷达角分辨率配置
   edgeThreshold: 1.0           # 原LIO-SAM角点曲率阈值，m²

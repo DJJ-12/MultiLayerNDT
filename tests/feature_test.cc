@@ -307,7 +307,8 @@ int main() {
         one_step.max_iterations = 1;
         one_step.max_step = .5;
         auto constrained_features = features;
-        constrained_features.exact_hessian = false;
+        constrained_features.exact_hessian = true;
+        constrained_features.use_jacobian_term = true;
         constrained_features.hessian_constraint_weight = .5;
         MultiLayerNdt constrained(one_step, constrained_features);
         constrained.SetFeatureTarget({nullptr, level_plane});
@@ -321,6 +322,23 @@ int main() {
         const auto soft = constrained.AlignFeatures({nullptr, raised_point}, SE3());
         Require(soft.iterations == 1 && std::abs(soft.pose.translation().z() - expected_step) < 1e-6,
             "soft Hessian step does not minimize the scaled joint objective");
+
+        auto selection = constrained_features;
+        selection.use_jacobian_term = false;
+        MultiLayerNdt exact_only(one_step, selection);
+        exact_only.SetFeatureTarget({nullptr, level_plane});
+        const auto exact_step = exact_only.AlignFeatures({nullptr, raised_point}, SE3());
+        Require(exact_step.iterations == 1 && std::abs(exact_step.pose.translation().z() + .25) < 1e-6,
+            "disabling the Jacobian term did not restore the exact Newton step");
+
+        selection.exact_hessian = false;
+        selection.use_jacobian_term = true;
+        MultiLayerNdt gn_with_jacobian(one_step, selection);
+        gn_with_jacobian.SetFeatureTarget({nullptr, level_plane});
+        const auto gn_step = gn_with_jacobian.AlignFeatures({nullptr, raised_point}, SE3());
+        Require(gn_step.iterations == 1 && std::abs(gn_step.pose.translation().z() + raised.z) < 1e-6,
+            "combining the Jacobian term forced the exact Hessian instead of Gauss-Newton");
+
         // 正曲率处的软约束候选沿下降方向，应使用同一平面的GN增量。
         raised_point->front().z = .38f;
         const auto fallback = constrained.AlignFeatures({nullptr, raised_point}, SE3());
